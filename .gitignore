@@ -1,0 +1,13 @@
+# Build files
+target
+
+# Environment
+.env
+
+# IDEs
+.idea
+
+# macOS
+.DS_Store
+
+Cargo.lock
