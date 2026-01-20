@@ -1,21 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["toolkit-rust", "cli", "sdk", "tools/*"]
+members = ["tools/*"]
 
 [workspace.package]
-edition = "2021"
+edition = "2021" # "2024" does not compile.
 version = "0.5.0"
 repository = "https://github.com/Talus-Network/nexus-sdk"
 homepage = "https://talus.network"
 license = "Apache-2.0"
 readme = "README.md"
-authors = ["Talus Engineers <engineering@taluslabs.xyz>"]
-keywords = ["nexus", "sdk", "cli", "talus", "web3"]
-categories = [
-    "api-bindings",
-    "command-line-interface",
-    "cryptography::cryptocurrencies",
-]
+authors = ["Talus Engineering <engineering@taluslabs.xyz>"]
+keywords = ["nexus", "talus", "tools", "walrus"]
+categories = []
 
 [workspace.dependencies]
 aes-gcm = "0.10"
@@ -75,8 +71,21 @@ warp = "0.3.7"
 zeroize = "1.7"
 
 # === Nexus deps ===
-nexus-toolkit = { path = "toolkit-rust" }
-nexus-sdk = { path = "sdk" }
+[workspace.dependencies.nexus-sdk]
+features = ["full"]
+# For local dev convenience
+# path = "../../nexus-sdk/sdk"
+# branch = "main"
+git = "https://github.com/Talus-Network/nexus-sdk"
+tag = "v0.5.0"
+
+[workspace.dependencies.nexus-toolkit]
+# For local dev convenience
+# path = "../../nexus-sdk/toolkit-rust"
+# branch = "main"
+git = "https://github.com/Talus-Network/nexus-sdk"
+tag = "v0.5.0"
+
 
 [profile.release]
 # debug = 1 means line charts only, which is minimum needed for good stack traces
