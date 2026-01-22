@@ -11,9 +11,6 @@ jobs:
     uses: ./.github/workflows/detect_changes.yml
     with:
       files: |
-        cli/**
-        sdk/**
-        toolkit-rust/**
         tools/**
 
   update-baseline:
