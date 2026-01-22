@@ -1,1 +1,3 @@
-See https://github.com/Talus-Network/nexus-sdk/blob/main/RELEASING.md
+See [releasing]
+
+[releasing]: https://github.com/Talus-Network/nexus-sdk/blob/main/RELEASING.md
