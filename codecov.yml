@@ -17,15 +17,6 @@ coverage:
         only_pulls: false
 
     patch:
-      cli:
-        # CLI patch coverage is informational only
-        target: 80%
-        threshold: 10%
-        base: auto
-        if_ci_failed: error
-        informational: true
-        paths:
-          - "cli/"
       default:
         # New code should have at least 80% coverage
         target: 80%
@@ -33,24 +24,9 @@ coverage:
         base: auto
         if_ci_failed: error
         informational: false
-        paths:
-          - "!cli/"
-          - "!sdk/src/test_utils/"
 
 component_management:
   individual_components:
-    - component_id: cli
-      name: CLI Module
-      paths:
-        - cli/**
-    - component_id: sdk
-      name: SDK Module
-      paths:
-        - sdk/**
-    - component_id: toolkit
-      name: Toolkit Rust
-      paths:
-        - toolkit-rust/**
     - component_id: tools
       name: Tools
       paths:
@@ -77,9 +53,6 @@ ignore:
 flags:
   unittests:
     paths:
-      - cli/
-      - sdk/
-      - toolkit-rust/
       - tools/
     carryforward: true
 
