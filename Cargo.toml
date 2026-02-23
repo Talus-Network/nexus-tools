@@ -77,14 +77,14 @@ features = ["full"]
 # path = "../../nexus-sdk/sdk"
 # branch = "main"
 git = "https://github.com/Talus-Network/nexus-sdk"
-tag = "v0.5.0"
+# tag = "v0.5.0"
 
 [workspace.dependencies.nexus-toolkit]
 # For local dev convenience
 # path = "../../nexus-sdk/toolkit-rust"
 # branch = "main"
 git = "https://github.com/Talus-Network/nexus-sdk"
-tag = "v0.5.0"
+# tag = "v0.5.0"
 
 
 [profile.release]
