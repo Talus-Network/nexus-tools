@@ -77,6 +77,7 @@ features = ["full"]
 # path = "../../nexus-sdk/sdk"
 # branch = "main"
 git = "https://github.com/Talus-Network/nexus-sdk"
+branch = "feat/leader-allow-list-sync"
 # tag = "v0.5.0"
 
 [workspace.dependencies.nexus-toolkit]
@@ -84,6 +85,7 @@ git = "https://github.com/Talus-Network/nexus-sdk"
 # path = "../../nexus-sdk/toolkit-rust"
 # branch = "main"
 git = "https://github.com/Talus-Network/nexus-sdk"
+branch = "feat/leader-allow-list-sync"
 # tag = "v0.5.0"
 
 
