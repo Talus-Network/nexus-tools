@@ -25,7 +25,6 @@ strum.workspace = true
 strum_macros.workspace = true
 tokio.workspace = true
 log.workspace = true
-env_logger.workspace = true
 # === Nexus deps ===
 nexus-toolkit.workspace = true
 nexus-sdk.workspace = true
