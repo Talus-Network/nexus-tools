@@ -268,6 +268,10 @@ impl NexusTool for OpenaiChatCompletion {
         fqn!("xyz.taluslabs.llm.openai.chat-completion@1")
     }
 
+    fn timeout() -> std::time::Duration {
+        std::time::Duration::from_secs(30)
+    }
+
     /// Performs a health check on the Tool and its dependencies.
     async fn health(&self) -> AnyResult<StatusCode> {
         status::check_api_health().await
