@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "exchanges-coinbase"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "mockito",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "backon",
  "base64 0.21.7",
@@ -1656,7 +1656,7 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "llm-openai-chat-completion"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -1701,7 +1701,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "math"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "nexus-sdk",
  "nexus-toolkit",
@@ -1821,8 +1821,8 @@ dependencies = [
 
 [[package]]
 name = "nexus-sdk"
-version = "0.7.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.7.0#8685795fef247ef0e1c4a062a93b40c963b402bf"
+version = "0.8.0"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.0#6ef53e5792b8f1762decf138c5e6f616ca5fbb18"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -1835,7 +1835,9 @@ dependencies = [
  "hex",
  "jsonschema",
  "lazy-regex",
+ "lazy_static",
  "petgraph",
+ "prometheus",
  "prost-types",
  "rand 0.8.5",
  "regex",
@@ -1851,13 +1853,14 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing",
  "zeroize",
 ]
 
 [[package]]
 name = "nexus-toolkit"
-version = "0.7.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.7.0#8685795fef247ef0e1c4a062a93b40c963b402bf"
+version = "0.8.0"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.0#6ef53e5792b8f1762decf138c5e6f616ca5fbb18"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -2306,6 +2309,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "protobuf",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "prost"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2335,6 +2353,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "protobuf"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65a1d4ddae7d8b5de68153b48f6aa3bba8cb002b243dbdbc55a5afbc98f99f4"
+dependencies = [
+ "once_cell",
+ "protobuf-support",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "protobuf-support"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
+dependencies = [
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3088,7 +3126,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "social-twitter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64 0.13.1",
  "chrono",
@@ -3325,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "templating-jinja"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "minijinja",
  "nexus-sdk",
@@ -3826,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "walrus"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "jsonschema",
