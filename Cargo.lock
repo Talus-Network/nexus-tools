@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "exchanges-coinbase"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "chrono",
  "mockito",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "backon",
  "base64 0.21.7",
@@ -1241,6 +1241,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1656,7 +1657,7 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "llm-openai-chat-completion"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -1701,7 +1702,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "math"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "nexus-sdk",
  "nexus-toolkit",
@@ -1821,8 +1822,8 @@ dependencies = [
 
 [[package]]
 name = "nexus-sdk"
-version = "0.8.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.0#6ef53e5792b8f1762decf138c5e6f616ca5fbb18"
+version = "0.8.4"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.4#6f167a41aeab0531450829de4d9a86e510b3478e"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -1859,8 +1860,8 @@ dependencies = [
 
 [[package]]
 name = "nexus-toolkit"
-version = "0.8.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.0#6ef53e5792b8f1762decf138c5e6f616ca5fbb18"
+version = "0.8.4"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v0.8.4#6f167a41aeab0531450829de4d9a86e510b3478e"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -2628,6 +2629,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -3126,7 +3128,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "social-twitter"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "base64 0.13.1",
  "chrono",
@@ -3363,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "templating-jinja"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "minijinja",
  "nexus-sdk",
@@ -3864,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "walrus"
-version = "0.8.0"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "jsonschema",
