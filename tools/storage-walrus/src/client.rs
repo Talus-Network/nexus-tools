@@ -125,7 +125,9 @@ mod tests {
             "https://walrus-publisher-testnet-abc-uc.a.run.app"
         ));
         assert!(is_cloud_run_url("https://foo.run.app"));
-        assert!(!is_cloud_run_url("https://publisher.walrus-testnet.walrus.space"));
+        assert!(!is_cloud_run_url(
+            "https://publisher.walrus-testnet.walrus.space"
+        ));
         assert!(!is_cloud_run_url("http://localhost:8080"));
     }
 }
