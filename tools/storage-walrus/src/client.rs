@@ -35,7 +35,7 @@
 //!
 //! [Service-to-service authentication on Cloud Run]: https://cloud.google.com/run/docs/authenticating/service-to-service
 //! [Fetch an ID token from the metadata server]: https://cloud.google.com/docs/authentication/get-id-token#metadata-server
-//! [Restricting ingress for Cloud Run]: https://cloud.google.com/run/docs/securing/ingress#internal
+//! [Restricting ingress for Cloud Run]: https://cloud.google.com/run/docs/securing/ingress#internal-services
 //! [Cloud Run IAM roles]: https://cloud.google.com/run/docs/reference/iam/roles#standard-roles
 
 use {
@@ -162,7 +162,7 @@ fn is_cloud_run_url(url: &str) -> bool {
 /// don't parse or validate it client-side, the receiving Cloud Run service
 /// does that. See [Fetching identity tokens] in the Cloud Run docs.
 ///
-/// [Fetching identity tokens]: https://cloud.google.com/run/docs/authenticating/service-to-service#use_a_token_to_call_a_cloud_run_service_or_function
+/// [Fetching identity tokens]: https://cloud.google.com/run/docs/authenticating/service-to-service#acquire-token
 async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
     let url = format!("{METADATA_IDENTITY_URL}?audience={audience}&format=full");
     let response = reqwest::Client::builder()
