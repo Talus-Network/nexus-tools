@@ -1,3 +1,43 @@
+//! Walrus client configuration and HTTP transport setup.
+//!
+//! ## URL resolution
+//!
+//! When [`WalrusConfig::build`] runs, the publisher and aggregator URLs are
+//! resolved independently in this order:
+//!   1. Explicit value passed via [`WalrusConfig::with_publisher_url`] /
+//!      [`WalrusConfig::with_aggregator_url`] (per-request, from the tool's
+//!      JSON input).
+//!   2. Env var ([`ENV_PUBLISHER_URL`] / [`ENV_AGGREGATOR_URL`]) — set on the
+//!      container so ops can point the tool at a non-default publisher
+//!      without changing every caller.
+//!   3. SDK defaults (the public Walrus endpoints baked into `nexus_sdk`).
+//!
+//! ## Authentication for Cloud Run publishers
+//!
+//! When the resolved publisher URL is a Google Cloud Run hostname
+//! (`*.run.app`), the underlying [`reqwest::Client`] is built with a default
+//! `Authorization: Bearer <id_token>` header. The token is an OIDC ID token
+//! fetched from the GCE metadata server with the publisher URL as the
+//! audience claim, and is what authenticates this tool against a publisher
+//! configured with `INGRESS_TRAFFIC_INTERNAL_ONLY` + `roles/run.invoker`.
+//!
+//! References:
+//! - [Service-to-service authentication on Cloud Run]
+//! - [Fetch an ID token from the metadata server]
+//! - [Restricting ingress for Cloud Run]
+//! - [Cloud Run IAM roles] — `roles/run.invoker`
+//!
+//! Failures of the metadata fetch (DNS, timeout, non-2xx, header build error)
+//! degrade gracefully to a plain client. The request then surfaces a 401/403
+//! from Cloud Run, which is the same outcome a misconfigured deployment
+//! produces today and avoids hanging the publisher build forever — the
+//! metadata fetch is bounded by [`METADATA_FETCH_TIMEOUT`].
+//!
+//! [Service-to-service authentication on Cloud Run]: https://cloud.google.com/run/docs/authenticating/service-to-service
+//! [Fetch an ID token from the metadata server]: https://cloud.google.com/docs/authentication/get-id-token#metadata-server
+//! [Restricting ingress for Cloud Run]: https://cloud.google.com/run/docs/securing/ingress#internal
+//! [Cloud Run IAM roles]: https://cloud.google.com/run/docs/reference/iam/roles#standard-roles
+
 use {
     nexus_sdk::walrus::WalrusClient,
     reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION},
@@ -10,7 +50,13 @@ const ENV_PUBLISHER_URL: &str = "WALRUS_PUBLISHER_URL";
 /// Env var providing a default Walrus aggregator URL when input doesn't specify one.
 const ENV_AGGREGATOR_URL: &str = "WALRUS_AGGREGATOR_URL";
 
-/// GCP metadata server endpoint for fetching ID tokens.
+/// GCE metadata server endpoint for fetching OIDC ID tokens for the
+/// container's runtime service account. Reachable from any GCP compute
+/// surface (Cloud Run, GKE, GCE) at the link-local address
+/// `metadata.google.internal`. Requires the `Metadata-Flavor: Google`
+/// header to defeat SSRF-style cross-origin requests.
+///
+/// See <https://cloud.google.com/docs/authentication/get-id-token#metadata-server>.
 const METADATA_IDENTITY_URL: &str =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";
 
@@ -108,7 +154,15 @@ fn is_cloud_run_url(url: &str) -> bool {
     url.contains(".run.app")
 }
 
-/// Fetch an OIDC ID token for the given audience from the GCE metadata server.
+/// Fetch an OIDC ID token for the given audience from the GCE metadata
+/// server. The audience must match the verifier's expectation — for Cloud
+/// Run that's the receiving service's URL.
+///
+/// The token returned in the response body is a JWT signed by Google; we
+/// don't parse or validate it client-side, the receiving Cloud Run service
+/// does that. See [Fetching identity tokens] in the Cloud Run docs.
+///
+/// [Fetching identity tokens]: https://cloud.google.com/run/docs/authenticating/service-to-service#use_a_token_to_call_a_cloud_run_service_or_function
 async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
     let url = format!("{METADATA_IDENTITY_URL}?audience={audience}&format=full");
     let response = reqwest::Client::builder()
