@@ -159,7 +159,8 @@ impl UploadJson {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(input.publisher_url)
             .with_aggregator_url(input.aggregator_url)
-            .build();
+            .build()
+            .await;
 
         let storage_info = walrus_client
             .upload_json(&input.json, input.epochs, input.send_to_address)
@@ -254,7 +255,8 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();
@@ -347,7 +349,8 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();
@@ -431,7 +434,8 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();

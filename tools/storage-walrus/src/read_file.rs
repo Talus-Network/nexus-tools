@@ -107,7 +107,8 @@ impl ReadFile {
     async fn read_file(&self, input: Input) -> Result<Vec<u8>, ReadFileError> {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(input.aggregator_url)
-            .build();
+            .build()
+            .await;
 
         let _contents = walrus_client.read_file(&input.blob_id).await?;
 
@@ -170,7 +171,8 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();
@@ -203,7 +205,8 @@ mod tests {
 
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();
@@ -239,7 +242,8 @@ mod tests {
 
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();

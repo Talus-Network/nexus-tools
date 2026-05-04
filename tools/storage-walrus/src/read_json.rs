@@ -172,7 +172,8 @@ impl ReadJson {
     ) -> Result<String, ReadJsonError> {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(aggregator_url)
-            .build();
+            .build()
+            .await;
 
         let storage_info = walrus_client.read_json(&blob_id).await?;
 
@@ -233,7 +234,8 @@ mod tests {
         let server = Server::new_async().await;
         let client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         (server, client)
     }
