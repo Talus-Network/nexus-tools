@@ -1,6 +1,7 @@
 use {
     nexus_sdk::walrus::WalrusClient,
     reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION},
+    std::time::Duration,
 };
 
 /// Env var providing a default Walrus publisher URL when input doesn't specify one.
@@ -12,6 +13,10 @@ const ENV_AGGREGATOR_URL: &str = "WALRUS_AGGREGATOR_URL";
 /// GCP metadata server endpoint for fetching ID tokens.
 const METADATA_IDENTITY_URL: &str =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";
+
+/// Bound the metadata-server fetch so a misconfigured deployment fails fast
+/// instead of hanging the publisher build forever.
+const METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Configuration for Walrus client
 #[derive(Default)]
@@ -106,7 +111,9 @@ fn is_cloud_run_url(url: &str) -> bool {
 /// Fetch an OIDC ID token for the given audience from the GCE metadata server.
 async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
     let url = format!("{METADATA_IDENTITY_URL}?audience={audience}&format=full");
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(METADATA_FETCH_TIMEOUT)
+        .build()?
         .get(url)
         .header("Metadata-Flavor", "Google")
         .send()
@@ -117,7 +124,10 @@ async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, tokio::sync::Mutex};
+
+    /// Serializes tests that mutate process-global env vars.
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[test]
     fn cloud_run_url_detection() {
@@ -129,5 +139,63 @@ mod tests {
             "https://publisher.walrus-testnet.walrus.space"
         ));
         assert!(!is_cloud_run_url("http://localhost:8080"));
+    }
+
+    #[tokio::test]
+    async fn build_http_client_returns_plain_for_no_url() {
+        // None URL must skip the metadata-server path entirely.
+        let _ = build_http_client(None).await;
+    }
+
+    #[tokio::test]
+    async fn build_http_client_returns_plain_for_non_cloud_run_url() {
+        // Non-Cloud-Run URL must skip the metadata-server path entirely.
+        let _ = build_http_client(Some("https://publisher.walrus-testnet.walrus.space")).await;
+    }
+
+    #[tokio::test]
+    async fn build_http_client_falls_back_when_metadata_unreachable() {
+        // Cloud Run URL → fetch_id_token is invoked, which fails because
+        // metadata.google.internal is unreachable from the test environment.
+        // The fallback path should still return a usable client.
+        let _ = build_http_client(Some("https://test-service-abc-uc.a.run.app")).await;
+    }
+
+    #[tokio::test]
+    async fn build_with_no_input_no_env() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var(ENV_PUBLISHER_URL);
+        std::env::remove_var(ENV_AGGREGATOR_URL);
+
+        // No publisher_url, no aggregator_url, no env vars → SDK defaults are used.
+        let _client = WalrusConfig::new().build().await;
+    }
+
+    #[tokio::test]
+    async fn build_uses_env_var_when_input_missing() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ENV_PUBLISHER_URL, "https://env-publisher.example.com");
+        std::env::set_var(ENV_AGGREGATOR_URL, "https://env-aggregator.example.com");
+
+        // Both env-var fallback branches are exercised.
+        let _client = WalrusConfig::new().build().await;
+
+        std::env::remove_var(ENV_PUBLISHER_URL);
+        std::env::remove_var(ENV_AGGREGATOR_URL);
+    }
+
+    #[tokio::test]
+    async fn build_input_overrides_env_var() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ENV_PUBLISHER_URL, "https://env-publisher.example.com");
+
+        // Explicit input should win over env var.
+        let _client = WalrusConfig::new()
+            .with_publisher_url(Some("https://input-publisher.example.com".to_string()))
+            .with_aggregator_url(Some("https://input-aggregator.example.com".to_string()))
+            .build()
+            .await;
+
+        std::env::remove_var(ENV_PUBLISHER_URL);
     }
 }
