@@ -171,7 +171,8 @@ impl UploadFile {
 
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(input.publisher_url)
-            .build();
+            .build()
+            .await;
 
         let storage_info = walrus_client
             .upload_file(
@@ -279,7 +280,8 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
@@ -360,7 +362,8 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
@@ -432,7 +435,8 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
-            .build();
+            .build()
+            .await;
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
