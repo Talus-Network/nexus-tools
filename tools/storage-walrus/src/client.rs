@@ -16,10 +16,17 @@
 //!
 //! When the resolved publisher URL is a Google Cloud Run hostname
 //! (`*.run.app`), the underlying [`reqwest::Client`] is built with a default
-//! `Authorization: Bearer <id_token>` header. The token is an OIDC ID token
-//! fetched from the GCE metadata server with the publisher URL as the
-//! audience claim, and is what authenticates this tool against a publisher
-//! configured with `INGRESS_TRAFFIC_INTERNAL_ONLY` + `roles/run.invoker`.
+//! `X-Serverless-Authorization: Bearer <id_token>` header. The token is an
+//! OIDC ID token fetched from the GCE metadata server with the publisher
+//! URL as the audience claim, and is what authenticates this tool against
+//! a publisher running on Cloud Run with `roles/run.invoker` IAM enforced.
+//!
+//! `X-Serverless-Authorization` is used (rather than `Authorization`)
+//! because Cloud Run validates and then **strips** that header before
+//! forwarding the request to the container. This is necessary because the
+//! Walrus publisher binary parses any `Authorization: Bearer …` header it
+//! receives as its own Walrus-JWT for replay protection, and rejects
+//! Google's OIDC tokens since they lack the `jti` (JWT ID) claim.
 //!
 //! References:
 //! - [Service-to-service authentication on Cloud Run]
@@ -40,9 +47,19 @@
 
 use {
     nexus_sdk::walrus::WalrusClient,
-    reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION},
+    reqwest::header::{HeaderMap, HeaderName, HeaderValue},
     std::time::Duration,
 };
+
+/// Header name Cloud Run uses to receive an OIDC ID token *without* forwarding
+/// it to the container. We use this (rather than `Authorization`) because the
+/// Walrus publisher parses any `Authorization: Bearer …` header as its own
+/// Walrus-JWT for replay protection and rejects Google's OIDC tokens
+/// (which lack the `jti` claim).
+///
+/// See <https://cloud.google.com/run/docs/authenticating/service-to-service#x_serverless_authorization>.
+static X_SERVERLESS_AUTHORIZATION: HeaderName =
+    HeaderName::from_static("x-serverless-authorization");
 
 /// Env var providing a default Walrus publisher URL when input doesn't specify one.
 const ENV_PUBLISHER_URL: &str = "WALRUS_PUBLISHER_URL";
@@ -137,7 +154,10 @@ async fn build_http_client(publisher_url: Option<&str>) -> reqwest::Client {
         Ok(token) => match HeaderValue::from_str(&format!("Bearer {token}")) {
             Ok(value) => {
                 let mut headers = HeaderMap::new();
-                headers.insert(AUTHORIZATION, value);
+                // X-Serverless-Authorization (not Authorization) so Cloud Run
+                // consumes the token for IAM and strips it before passing
+                // the request on to the publisher container.
+                headers.insert(X_SERVERLESS_AUTHORIZATION.clone(), value);
                 reqwest::Client::builder()
                     .default_headers(headers)
                     .build()
