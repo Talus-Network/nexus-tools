@@ -12,6 +12,16 @@
 //!      without changing every caller.
 //!   3. SDK defaults (the public Walrus endpoints baked into `nexus_sdk`).
 //!
+//! ## Retry on publisher consistency 500
+//!
+//! When the publisher's Sui RPC is a load-balanced endpoint, the post-write
+//! read of the freshly-minted `Blob` NFT may land on a different fullnode
+//! than the write and return `NotExists`. The publisher surfaces this as a
+//! `500` with a "response does not contain object data" message body.
+//! [`with_publisher_retry`] detects this specific signature and retries
+//! once after a configurable delay (default 2s, override via
+//! [`ENV_PUBLISHER_RETRY_DELAY_SECS`]). All other errors are propagated.
+//!
 //! ## Authentication for Cloud Run publishers
 //!
 //! When the resolved publisher URL is a Google Cloud Run hostname
@@ -196,11 +206,26 @@ async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
     response.text().await
 }
 
-/// Backoff before retrying a publisher operation that hit the read-after-write
-/// consistency race described on [`is_transient_publisher_500`]. Two seconds
-/// is comfortably larger than a Sui checkpoint (~250 ms) but small enough that
-/// the user-facing latency stays acceptable.
-const PUBLISHER_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Default backoff before retrying a publisher operation that hit the
+/// read-after-write consistency race described on
+/// [`is_transient_publisher_500`]. Two seconds is comfortably larger than a
+/// Sui checkpoint (~250 ms) but small enough that the user-facing latency
+/// stays acceptable.
+const DEFAULT_PUBLISHER_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// Env var used to override [`DEFAULT_PUBLISHER_RETRY_DELAY`]. Value is parsed
+/// as an integer number of seconds (`u64::from_str`); empty / unset / invalid
+/// values fall back to the default.
+const ENV_PUBLISHER_RETRY_DELAY_SECS: &str = "WALRUS_PUBLISHER_RETRY_DELAY_SECS";
+
+/// Resolve the retry delay from the env var, falling back to the default.
+fn publisher_retry_delay() -> Duration {
+    std::env::var(ENV_PUBLISHER_RETRY_DELAY_SECS)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_PUBLISHER_RETRY_DELAY)
+}
 
 /// True if `err` is the publisher's `500 Internal` response caused by a
 /// post-write Sui read landing on a different fullnode (behind the public RPC
@@ -244,7 +269,7 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, WalrusError>>,
 {
-    retry_with_delay(PUBLISHER_RETRY_DELAY, attempt).await
+    retry_with_delay(publisher_retry_delay(), attempt).await
 }
 
 /// Inner helper that exposes the delay as a parameter so tests can pass
@@ -440,6 +465,29 @@ mod tests {
 
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(result.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn retry_delay_defaults_to_two_seconds() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var(ENV_PUBLISHER_RETRY_DELAY_SECS);
+        assert_eq!(publisher_retry_delay(), Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn retry_delay_is_overridable_via_env() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ENV_PUBLISHER_RETRY_DELAY_SECS, "5");
+        assert_eq!(publisher_retry_delay(), Duration::from_secs(5));
+        std::env::remove_var(ENV_PUBLISHER_RETRY_DELAY_SECS);
+    }
+
+    #[tokio::test]
+    async fn retry_delay_falls_back_to_default_on_invalid_env() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ENV_PUBLISHER_RETRY_DELAY_SECS, "not-a-number");
+        assert_eq!(publisher_retry_delay(), Duration::from_secs(2));
+        std::env::remove_var(ENV_PUBLISHER_RETRY_DELAY_SECS);
     }
 
     #[tokio::test]
