@@ -1,0 +1,27 @@
+[package]
+name = "memwal-test-server"
+description = "In-memory MemWal-compatible relayer for integration tests"
+
+edition.workspace   = true
+version.workspace   = true
+repository.workspace = true
+homepage.workspace  = true
+license.workspace   = true
+readme.workspace    = true
+authors.workspace   = true
+keywords.workspace  = true
+categories.workspace = true
+
+[lib]
+name = "memwal_test_server"
+
+[dependencies]
+bytes.workspace      = true
+ed25519-dalek.workspace = true
+hex.workspace        = true
+portpicker.workspace = true
+serde.workspace      = true
+serde_json.workspace = true
+sha2.workspace       = true
+tokio.workspace      = true
+warp.workspace       = true

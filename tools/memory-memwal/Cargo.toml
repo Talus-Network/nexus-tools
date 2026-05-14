@@ -1,0 +1,32 @@
+[package]
+name = "memory-memwal"
+description = "Nexus Tools for MemWal persistent memory"
+
+edition.workspace   = true
+version.workspace   = true
+repository.workspace = true
+homepage.workspace  = true
+license.workspace   = true
+readme.workspace    = true
+authors.workspace   = true
+keywords.workspace  = true
+categories.workspace = true
+
+[dependencies]
+anyhow.workspace    = true
+ed25519-dalek.workspace = true
+hex.workspace       = true
+nexus-sdk.workspace = true
+nexus-toolkit.workspace = true
+reqwest.workspace   = true
+schemars.workspace  = true
+serde.workspace     = true
+serde_json.workspace = true
+sha2.workspace      = true
+thiserror.workspace = true
+tokio.workspace     = true
+
+[dev-dependencies]
+memwal-test-server = { path = "../memwal-test-server" }
+mockito.workspace      = true
+serial_test.workspace  = true
