@@ -46,9 +46,9 @@
 //! [Cloud Run IAM roles]: https://cloud.google.com/run/docs/reference/iam/roles#standard-roles
 
 use {
-    nexus_sdk::walrus::WalrusClient,
+    nexus_sdk::walrus::{WalrusClient, WalrusError},
     reqwest::header::{HeaderMap, HeaderName, HeaderValue},
-    std::time::Duration,
+    std::{future::Future, time::Duration},
 };
 
 /// Header name Cloud Run uses to receive an OIDC ID token *without* forwarding
@@ -196,6 +196,79 @@ async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
     response.text().await
 }
 
+/// Backoff before retrying a publisher operation that hit the read-after-write
+/// consistency race described on [`is_transient_publisher_500`]. Two seconds
+/// is comfortably larger than a Sui checkpoint (~250 ms) but small enough that
+/// the user-facing latency stays acceptable.
+const PUBLISHER_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// True if `err` is the publisher's `500 Internal` response caused by a
+/// post-write Sui read landing on a different fullnode (behind the public RPC
+/// load balancer) than the one that executed the storage transaction.
+///
+/// The publisher correctly stored the blob and minted the on-chain `Blob`
+/// NFT, but its follow-up `sui_getObject` for that NFT returned `NotExists`
+/// because the read hit a fullnode that hadn't observed the write yet. The
+/// publisher surfaces this as:
+///
+/// ```text
+/// 500 INTERNAL: "client internal error: response does not contain object data
+///                [err=Some(NotExists { object_id: 0x… })]"
+/// ```
+///
+/// Such a request is safe to retry: Walrus blob IDs are deterministic in the
+/// content + encoding parameters, so the second PUT lands on the same blob
+/// and the publisher returns `AlreadyCertified` once the chain state has
+/// propagated across the load balancer's fullnodes.
+fn is_transient_publisher_500(err: &WalrusError) -> bool {
+    matches!(
+        err,
+        WalrusError::ApiError {
+            status_code: 500,
+            message,
+        } if message.contains("response does not contain object data")
+            && message.contains("NotExists")
+    )
+}
+
+/// Run `attempt` once, and if it fails with [`is_transient_publisher_500`],
+/// sleep [`PUBLISHER_RETRY_DELAY`] and run it once more. Any other failure
+/// (including the retry's failure) is returned to the caller unchanged.
+///
+/// The single-retry policy is intentional: this isn't an unreliable-network
+/// scenario worth exponential backoff. It's a brief consistency lag between
+/// fullnodes behind the public Sui RPC load balancer, which clears in well
+/// under [`PUBLISHER_RETRY_DELAY`] in practice.
+pub async fn with_publisher_retry<F, Fut, T>(attempt: F) -> Result<T, WalrusError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, WalrusError>>,
+{
+    retry_with_delay(PUBLISHER_RETRY_DELAY, attempt).await
+}
+
+/// Inner helper that exposes the delay as a parameter so tests can pass
+/// [`Duration::ZERO`] and run without sleeping.
+async fn retry_with_delay<F, Fut, T>(delay: Duration, mut attempt: F) -> Result<T, WalrusError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, WalrusError>>,
+{
+    match attempt().await {
+        Ok(value) => Ok(value),
+        Err(err) if is_transient_publisher_500(&err) => {
+            eprintln!(
+                "publisher returned transient 500 (Sui RPC read-after-write); \
+                 retrying once after {}ms: {err}",
+                delay.as_millis()
+            );
+            tokio::time::sleep(delay).await;
+            attempt().await
+        }
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {super::*, tokio::sync::Mutex};
@@ -271,5 +344,117 @@ mod tests {
             .await;
 
         std::env::remove_var(ENV_PUBLISHER_URL);
+    }
+
+    // --- Publisher retry classifier & helper ---
+
+    /// The exact body the publisher returned in the trace that motivated this
+    /// retry (mainnet match 0x4ed94a23…, execution 0x8dded729…).
+    const TRANSIENT_500_BODY: &str = r#"{"error":{"status":"INTERNAL","code":500,"message":"client internal error: response does not contain object data [err=Some(NotExists { object_id: 0x376fc555774bfccbe3bf8967bc85d0bf1daf749fa57709b258b18a36633b594c })]"}}"#;
+
+    fn transient_500() -> WalrusError {
+        WalrusError::ApiError {
+            status_code: 500,
+            message: TRANSIENT_500_BODY.to_string(),
+        }
+    }
+
+    #[test]
+    fn transient_500_is_classified() {
+        assert!(is_transient_publisher_500(&transient_500()));
+    }
+
+    #[test]
+    fn other_500_is_not_classified_as_transient() {
+        assert!(!is_transient_publisher_500(&WalrusError::ApiError {
+            status_code: 500,
+            message: "Internal Server Error: unrelated failure".to_string(),
+        }));
+    }
+
+    #[test]
+    fn non_500_status_is_not_classified_as_transient() {
+        assert!(!is_transient_publisher_500(&WalrusError::ApiError {
+            status_code: 404,
+            message: "response does not contain object data NotExists".to_string(),
+        }));
+    }
+
+    #[tokio::test]
+    async fn retry_helper_retries_once_on_transient_500() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+
+        let result: Result<u8, WalrusError> = retry_with_delay(Duration::ZERO, || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if n == 1 {
+                    Err(transient_500())
+                } else {
+                    Ok(42u8)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn retry_helper_does_not_retry_on_other_errors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+
+        let result: Result<(), WalrusError> = retry_with_delay(Duration::ZERO, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Err(WalrusError::ApiError {
+                    status_code: 503,
+                    message: "Service Unavailable".to_string(),
+                })
+            }
+        })
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            result,
+            Err(WalrusError::ApiError {
+                status_code: 503,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_helper_does_not_retry_on_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+
+        let result: Result<u8, WalrusError> = retry_with_delay(Duration::ZERO, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(7u8) }
+        })
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(result.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn retry_helper_returns_second_error_when_retry_fails() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+
+        let result: Result<(), WalrusError> = retry_with_delay(Duration::ZERO, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err(transient_500()) }
+        })
+        .await;
+
+        // Both attempts ran; final error is propagated.
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(is_transient_publisher_500(&result.unwrap_err()));
     }
 }

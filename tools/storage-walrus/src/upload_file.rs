@@ -174,14 +174,12 @@ impl UploadFile {
             .build()
             .await;
 
-        let storage_info = walrus_client
-            .upload_file(
-                &PathBuf::from(&input.file_path),
-                input.epochs,
-                input.send_to,
-            )
-            .await
-            .map_err(UploadFileError::UploadError)?;
+        let file_path = PathBuf::from(&input.file_path);
+        let storage_info = crate::client::with_publisher_retry(|| {
+            walrus_client.upload_file(&file_path, input.epochs, input.send_to.clone())
+        })
+        .await
+        .map_err(UploadFileError::UploadError)?;
 
         Ok(storage_info)
     }
