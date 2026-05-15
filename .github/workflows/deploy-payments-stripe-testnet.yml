@@ -1,0 +1,71 @@
+name: deploy-payments-stripe-testnet
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/payments-stripe/**"
+      - ".github/workflows/deploy-payments-stripe-testnet.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: talus-tools-testnet
+  REGION: us-central1
+  REPO: nexus-tools
+  CRATE: payments-stripe
+  SERVICE: payments-stripe-testnet
+
+jobs:
+  build-deploy-register:
+    runs-on: ubuntu-latest
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_TESTNET }}
+          service_account: github-actions@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${CRATE}:${SHA}"
+          docker build -f tools/${CRATE}/deploy/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          export REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}"
+          envsubst < tools/${CRATE}/deploy/cloud-run.testnet.yaml > /tmp/svc.yaml
+          gcloud run services replace /tmp/svc.yaml --region "$REGION" --quiet
+          URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')
+          echo "URL=$URL" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          for p in $(jq -r '.[]' tools/${CRATE}/paths.json); do
+            curl -fsS "${URL}${p}/health"
+            curl -fsS "${URL}${p}/meta" | jq -e .fqn >/dev/null
+          done
+
+      - name: Install Nexus CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Talus-Network/homebrew-tap/main/install.sh | bash
+          echo "$HOME/.nexus/bin" >> "$GITHUB_PATH"
+
+      - name: Register / update tools on Nexus testnet
+        run: bash tools/${CRATE}/deploy/register.sh "$URL" testnet

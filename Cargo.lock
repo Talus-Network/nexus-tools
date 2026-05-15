@@ -2139,6 +2139,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "payments-stripe"
+version = "1.0.0"
+dependencies = [
+ "mockito",
+ "nexus-sdk",
+ "nexus-toolkit",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
