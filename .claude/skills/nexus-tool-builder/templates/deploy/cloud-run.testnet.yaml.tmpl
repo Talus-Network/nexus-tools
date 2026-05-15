@@ -1,0 +1,61 @@
+# Credential model: this service holds NO upstream API credentials.
+# The only secrets mounted here are:
+#   - nexus-toolkit-config-testnet-<crate>  (Tool's own Ed25519 signing key, tool_kid)
+#   - nexus-allowed-leaders-testnet         (public keys, not secret)
+# Upstream API keys (Stripe, OpenAI, etc.) come in via the per-request
+# `Input` struct, sourced by the Leader at DAG-execution time. Adding
+# any other secretKeyRef fails the auditor's C10 check.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: "{{crate_name}}-testnet"
+  labels:
+    network: testnet
+    tool-fqn: "{{fqn_label}}"
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "5"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: "nexus-tools-testnet@${PROJECT_ID}.iam.gserviceaccount.com"
+      timeoutSeconds: 30
+      containerConcurrency: 80
+      containers:
+        - name: tool
+          image: "${REGISTRY}/{{crate_name}}:${SHA}"
+          ports:
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:8080
+            - name: NEXUS_TOOLKIT_CONFIG_PATH
+              value: /etc/nexus/toolkit.json
+            - name: NEXUS_NETWORK
+              value: testnet
+          volumeMounts:
+            - name: nexus-config
+              mountPath: /etc/nexus
+              readOnly: true
+            - name: allowed-leaders
+              mountPath: /etc/nexus/allowed_leaders
+              readOnly: true
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: nexus-config
+          secret:
+            secretName: "nexus-toolkit-config-testnet-{{crate_name}}"
+        - name: allowed-leaders
+          secret:
+            secretName: nexus-allowed-leaders-testnet
+  traffic:
+    - percent: 100
+      latestRevision: true

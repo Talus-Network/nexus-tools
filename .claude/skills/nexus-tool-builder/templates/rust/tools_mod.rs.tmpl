@@ -1,0 +1,22 @@
+//! {{ServicePascal}} endpoints.
+//!
+//! Each module under here is one stateless `NexusTool`. Shared state is
+//! prohibited — there must be no `static` accumulator, no
+//! `lazy_static`, no `Mutex`/`RwLock` carrying request data across
+//! invocations. Configuration constants (URLs, version strings) are
+//! fine.
+
+pub(crate) const {{SERVICE_UPPER}}_API_BASE: &str = "{{api_base_url}}";
+
+// One `pub(crate) mod <endpoint_snake>;` per endpoint file:
+// pub(crate) mod {{endpoint_snake}};
+
+pub(crate) mod models;
+
+// Shared custom deserializers (if any) go here. Functions only — no
+// mutable shared state.
+//
+// pub(crate) fn deserialize_thing<'de, D>(deserializer: D) -> Result<String, D::Error>
+// where
+//     D: serde::Deserializer<'de>,
+// { /* ... */ }

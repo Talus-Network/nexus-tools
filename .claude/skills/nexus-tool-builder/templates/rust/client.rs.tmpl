@@ -1,0 +1,184 @@
+//! {{ServicePascal}} API client.
+//!
+//! Wraps `reqwest::Client` with `.get<T>` / `.post<T>` / `.post_form<T>`
+//! helpers that return a typed `{{ServicePascal}}ErrorResponse` on failure.
+//!
+//! ## Credential model
+//!
+//! **This client holds NO upstream API credentials.** Per the
+//! nexus-tools repo convention (see
+//! `tools/llm-openai-chat-completion`, `tools/social-twitter`), every
+//! credential is passed in by the caller on each request, sourced from
+//! the `Input` struct of the invoking `NexusTool`.
+//!
+//! The endpoint code calls `client.with_auth(&input.api_key)` (or
+//! equivalent) before each request — never `std::env::var(...)`.
+//!
+//! Auth model selected for this crate: {{auth_model}}.
+
+use {
+    crate::{
+        error::{ {{ServicePascal}}ErrorKind, {{ServicePascal}}ErrorResponse },
+        tools::{{SERVICE_UPPER}}_API_BASE,
+    },
+    reqwest::{Client, RequestBuilder},
+    serde::{de::DeserializeOwned, Serialize},
+    std::sync::Arc,
+};
+
+#[derive(Clone)]
+pub struct {{ServicePascal}}Client {
+    client: Arc<Client>,
+    base_url: String,
+    /// Optional per-call bearer credential. Set via `.with_auth(...)`.
+    /// Held only for the duration of one invocation; never persisted.
+    bearer: Option<String>,
+    /// Optional per-call idempotency key. Set via `.with_idempotency(...)`.
+    idempotency_key: Option<String>,
+}
+
+impl {{ServicePascal}}Client {
+    pub fn new(base_url: Option<&str>) -> Self {
+        let base_url = base_url.unwrap_or({{SERVICE_UPPER}}_API_BASE).to_string();
+
+        let client = Client::builder()
+            .user_agent("nexus-sdk-{{crate_name}}/1.0")
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client: Arc::new(client),
+            base_url,
+            bearer: None,
+            idempotency_key: None,
+        }
+    }
+
+    /// Attach a bearer credential for the next request. The credential is
+    /// passed in by the DAG via the `Input` struct — this client never
+    /// reads it from env / disk.
+    #[must_use]
+    pub fn with_auth(mut self, bearer: &str) -> Self {
+        self.bearer = Some(bearer.to_string());
+        self
+    }
+
+    /// Attach an `Idempotency-Key` header for the next request. Required
+    /// by Stripe-style APIs on writes; harmless on others.
+    #[must_use]
+    pub fn with_idempotency(mut self, key: &str) -> Self {
+        self.idempotency_key = Some(key.to_string());
+        self
+    }
+
+    /// GET — JSON response.
+    pub async fn get<T>(&self, endpoint: &str) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.get(&url));
+        self.send(req).await
+    }
+
+    /// POST with a JSON body.
+    pub async fn post<T, B>(&self, endpoint: &str, body: &B) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.post(&url).json(body));
+        self.send(req).await
+    }
+
+    /// POST with a form-encoded body (Stripe / OAuth-style APIs).
+    pub async fn post_form<T, B>(&self, endpoint: &str, body: &B) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.post(&url).form(body));
+        self.send(req).await
+    }
+
+    /// DELETE.
+    pub async fn delete<T>(&self, endpoint: &str) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.delete(&url));
+        self.send(req).await
+    }
+
+    fn url(&self, endpoint: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), endpoint.trim_start_matches('/'))
+    }
+
+    fn apply_headers(&self, mut req: RequestBuilder) -> RequestBuilder {
+        if let Some(ref bearer) = self.bearer {
+            req = req.bearer_auth(bearer);
+        }
+        if let Some(ref key) = self.idempotency_key {
+            req = req.header("Idempotency-Key", key);
+        }
+        req
+    }
+
+    async fn send<T>(&self, req: RequestBuilder) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err({{ServicePascal}}ErrorResponse {
+                    reason: format!("Network error: {}", e),
+                    kind: {{ServicePascal}}ErrorKind::from_network_error(&e),
+                    status_code: Some(0),
+                })
+            }
+        };
+
+        let status = response.status();
+        let text = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                return Err({{ServicePascal}}ErrorResponse {
+                    reason: format!("Failed to read response: {}", e),
+                    kind: {{ServicePascal}}ErrorKind::Parse,
+                    status_code: None,
+                })
+            }
+        };
+
+        if !status.is_success() {
+            // Try to extract a structured error per the API's envelope.
+            // The error.rs template provides a try_parse_api_error helper.
+            if let Some(parsed) = crate::error::try_parse_api_error(&text, status.as_u16()) {
+                return Err(parsed);
+            }
+            return Err({{ServicePascal}}ErrorResponse {
+                reason: format!("API error ({}): {}", status, truncate(&text, 512)),
+                kind: {{ServicePascal}}ErrorKind::from_status_code(status.as_u16()),
+                status_code: Some(status.as_u16()),
+            });
+        }
+
+        serde_json::from_str::<T>(&text).map_err(|e| {{ServicePascal}}ErrorResponse {
+            reason: format!("Failed to parse JSON: {}", e),
+            kind: {{ServicePascal}}ErrorKind::Parse,
+            status_code: None,
+        })
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
+    }
+}

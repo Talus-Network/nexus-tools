@@ -1,0 +1,16 @@
+[package]
+name = "{{move_package_name}}"
+edition = "2024.beta"
+
+[dependencies]
+nexus_primitives = { local = "path/to/nexus/primitives" }
+nexus_workflow   = { local = "path/to/nexus/workflow" }
+nexus_interface  = { local = "path/to/nexus/interface" }
+
+[addresses]
+{{move_package_name}}  = "0x0"
+nexus_primitives       = "0xf311c80e60f77ba6008237ed0cd619a05f25894cdac3e2318cf41c74e8e24cea"
+nexus_workflow         = "0x5addaf9046d4a16ec3cbbe4fa9f89b5da73e0304ed1fff26fb8301574692cf4b"
+nexus_interface        = "0xf66be6face6f35dea9d6aea2b6ce8930a2bf7f55ac9ec7c80ffcb8182cabf5ae"
+
+# Update local paths and on-chain addresses for your target network.

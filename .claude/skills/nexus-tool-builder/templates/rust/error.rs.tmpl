@@ -1,0 +1,162 @@
+use {
+    reqwest::StatusCode,
+    schemars::JsonSchema,
+    serde::{Deserialize, Serialize},
+    thiserror::Error,
+};
+
+/// Machine-readable error kinds for {{ServicePascal}} operations.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum {{ServicePascal}}ErrorKind {
+    /// HTTP 400 — client-side input was rejected.
+    InvalidRequest,
+    /// Credit-card-style error (Stripe `card_error`).
+    CardError,
+    /// Validation error returned by the API (Stripe `validation_error`).
+    ValidationError,
+    /// Idempotency conflict (Stripe `idempotency_error`).
+    IdempotencyError,
+    /// HTTP 401 — missing or invalid credentials.
+    Unauthorized,
+    /// HTTP 402 — payment required.
+    PaymentRequired,
+    /// HTTP 403 — credentials lack permission for this resource.
+    Forbidden,
+    /// HTTP 404 — resource not found.
+    NotFound,
+    /// HTTP 408 / network timeout.
+    TimedOut,
+    /// HTTP 409 — conflict (duplicate, version skew).
+    Conflict,
+    /// HTTP 429 — rate limit exceeded.
+    RateLimitExceeded,
+    /// HTTP 500 — upstream server error.
+    InternalServerError,
+    /// HTTP 502 — upstream returned a bad gateway response.
+    BadGateway,
+    /// HTTP 503 — upstream service unavailable.
+    ServiceUnavailable,
+    /// Network connection failed.
+    NetworkConnectionFailed,
+    /// Failed to parse the upstream response.
+    Parse,
+    /// Catch-all for unmapped errors.
+    Unknown,
+}
+
+/// Standard error response surface for {{ServicePascal}} tools.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct {{ServicePascal}}ErrorResponse {
+    pub reason: String,
+    pub kind: {{ServicePascal}}ErrorKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+}
+
+#[derive(Error, Debug)]
+#[allow(dead_code)]
+pub enum {{ServicePascal}}Error {
+    #[error("Network error: {0}")]
+    Network(#[from] reqwest::Error),
+
+    #[error("Response parsing error: {0}")]
+    ParseError(#[from] serde_json::Error),
+
+    #[error("API error: {0}")]
+    ApiError(String),
+
+    #[error("API status error: {0}")]
+    StatusError(StatusCode),
+}
+
+impl {{ServicePascal}}ErrorKind {
+    pub fn from_status_code(status_code: u16) -> Self {
+        match status_code {
+            400 => Self::InvalidRequest,
+            401 => Self::Unauthorized,
+            402 => Self::PaymentRequired,
+            403 => Self::Forbidden,
+            404 => Self::NotFound,
+            408 => Self::TimedOut,
+            409 => Self::Conflict,
+            429 => Self::RateLimitExceeded,
+            500 => Self::InternalServerError,
+            502 => Self::BadGateway,
+            503 => Self::ServiceUnavailable,
+            504 => Self::TimedOut,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn from_network_error(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::TimedOut
+        } else if error.is_connect() {
+            Self::NetworkConnectionFailed
+        } else {
+            Self::NetworkConnectionFailed
+        }
+    }
+
+    /// Map a provider-specific error type string to our kind. Override
+    /// per service; defaults below cover the Stripe envelope.
+    pub fn from_api_error_type(error_type: &str) -> Self {
+        match error_type {
+            // Stripe-style error types
+            "card_error" => Self::CardError,
+            "validation_error" => Self::ValidationError,
+            "invalid_request_error" => Self::InvalidRequest,
+            "idempotency_error" => Self::IdempotencyError,
+            "rate_limit_error" => Self::RateLimitExceeded,
+            "authentication_error" => Self::Unauthorized,
+            "api_error" | "api_connection_error" => Self::InternalServerError,
+            // Generic fallbacks
+            "invalid_request" => Self::InvalidRequest,
+            "not_found" => Self::NotFound,
+            "unauthorized" => Self::Unauthorized,
+            "forbidden" => Self::Forbidden,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Per-service envelope shape — Stripe's `{"error": {...}}` is the
+/// default; other services override.
+#[derive(Debug, Deserialize)]
+struct StripeStyleEnvelope {
+    error: StripeStyleError,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeStyleError {
+    #[serde(rename = "type")]
+    error_type: Option<String>,
+    code: Option<String>,
+    message: Option<String>,
+    param: Option<String>,
+}
+
+/// Best-effort parse of a non-2xx response body into a typed error.
+/// Returns `None` if the body shape isn't recognized; the caller falls
+/// back to a generic mapping.
+pub fn try_parse_api_error(body: &str, status_code: u16) -> Option<{{ServicePascal}}ErrorResponse> {
+    if let Ok(env) = serde_json::from_str::<StripeStyleEnvelope>(body) {
+        let kind = env.error.error_type
+            .as_deref()
+            .map(|t| {{ServicePascal}}ErrorKind::from_api_error_type(t))
+            .unwrap_or_else(|| {{ServicePascal}}ErrorKind::from_status_code(status_code));
+        let reason = match (env.error.message, env.error.code, env.error.param) {
+            (Some(m), _, Some(p)) => format!("{} (param: {})", m, p),
+            (Some(m), _, None) => m,
+            (None, Some(c), _) => format!("API error code: {}", c),
+            _ => format!("API error ({})", status_code),
+        };
+        return Some({{ServicePascal}}ErrorResponse {
+            reason,
+            kind,
+            status_code: Some(status_code),
+        });
+    }
+    None
+}
