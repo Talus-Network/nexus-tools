@@ -64,6 +64,7 @@ bash .claude/skills/nexus-tool-builder/scripts/audit.sh off-chain <crate>
 ```
 
 The script wraps:
+
 - `cargo +stable check --all-targets`
 - `cargo +stable clippy --all-targets --all-features -- -D warnings -W clippy::pedantic`
 - `cargo +stable test --no-run` (does the test suite compile?)
@@ -143,6 +144,7 @@ bash .claude/skills/nexus-tool-builder/scripts/audit.sh on-chain <crate>
 ```
 
 The script wraps:
+
 - `sui move build`
 - `sui move test`
 - `sui move prove` (Move Prover — best-effort; not all rules are
@@ -294,7 +296,7 @@ Blockers (if any): <list of CRITICAL / HIGH titles>
 
 After writing `AUDIT.md`, print a concise summary to the user:
 
-```
+```text
 nexus-tool-auditor: <crate> @ <sha>
   CRITICAL: <count>  HIGH: <count>  MEDIUM: <count>
   Recommendation: <verdict>

@@ -37,8 +37,8 @@ The `Dockerfile` the skill emits is portable. To move a single tool to
 Akash or Spheron later:
 
 1. Push the existing image to a public registry (Docker Hub / GHCR).
-2. Write a small SDL (Akash) or Spheron config that references the image.
-3. Run `nexus tool register offchain --tool-fqn <fqn> --url <new-url>` to
+1. Write a small SDL (Akash) or Spheron config that references the image.
+1. Run `nexus tool register offchain --tool-fqn <fqn> --url <new-url>` to
    point Nexus at the new URL. Idempotent — the FQN stays the same.
 
 No Rust code changes required.

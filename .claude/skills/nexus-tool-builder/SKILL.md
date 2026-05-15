@@ -39,11 +39,11 @@ Reference material lives in `reference/`; rendered file templates live in
 1. Confirm the working repo is `nexus-tools` (or another repo that pulls
    `nexus-toolkit`). Read the workspace `Cargo.toml`; it should declare
    `nexus-toolkit` and `nexus-sdk`.
-2. Confirm the `nexus` CLI is installed: `nexus --version`. If absent, point
+1. Confirm the `nexus` CLI is installed: `nexus --version`. If absent, point
    the user at the install instructions in `Talus-Network/nexus-sdk/cli`
    before continuing. Do not silently fall back to local-only templates —
    staying on the official scaffold keeps tools aligned with upstream.
-3. Read `reference/architecture.md` and `reference/style-guide.md` (or
+1. Read `reference/architecture.md` and `reference/style-guide.md` (or
    `reference/onchain-tools.md` if the user requested an on-chain tool).
 
 ## Required inputs (collect via AskUserQuestion when ambiguous)
@@ -63,11 +63,11 @@ Reference material lives in `reference/`; rendered file templates live in
 1. **Discover endpoints.** Use WebFetch on the docs URL (and any linked
    sub-pages). Produce a table of `{ name, http_method, path, query/body
    params, response schema, error shape }`. Echo it back to the user.
-2. **Design ports per endpoint** honoring the style guide: `snake_case`
+1. **Design ports per endpoint** honoring the style guide: `snake_case`
    names, error variants prefixed `err`, flat outputs, crucial ports
    non-optional, split prompt/context-style fields the way the DAG needs
    them.
-3. **Scaffold via the official CLI:**
+1. **Scaffold via the official CLI:**
 
    ```sh
    bash .claude/skills/nexus-tool-builder/scripts/new_tool.sh \
@@ -78,18 +78,18 @@ Reference material lives in `reference/`; rendered file templates live in
    the generated crate into `tools/`, and renders the local templates over
    it. (Workspace `Cargo.toml` already declares `members = ["tools/*"]`, so
    the crate is picked up automatically.)
-4. **Generate per-endpoint code** by rendering `templates/rust/endpoint.rs.tmpl`
+1. **Generate per-endpoint code** by rendering `templates/rust/endpoint.rs.tmpl`
    once per endpoint into `tools/<crate>/src/tools/<endpoint>.rs`. Each file
    contains `Input`, `Output` (enum with `Ok` / `Err`), an `impl NexusTool`,
    and a `mockito` test module. Add `pub(crate) mod <endpoint>;` to
    `src/tools/mod.rs`. Append the tool to the `bootstrap!([…])` list in
    `src/main.rs`.
-5. **Generate `README.md`** with one section per FQN matching
+1. **Generate `README.md`** with one section per FQN matching
    `tools/exchanges-coinbase/README.md`. Include the API docs URL.
-6. **Register the crate in the build:** append the new package name to each
+1. **Register the crate in the build:** append the new package name to each
    `--package` line in `tools/.just` (recipes: `build`, `check`, `test`,
    `fmt-check`, `clippy`).
-7. **Emit deploy scaffolding** into `tools/<crate>/deploy/` and
+1. **Emit deploy scaffolding** into `tools/<crate>/deploy/` and
    `.github/workflows/`:
    - `Dockerfile` (multi-stage Rust → distroless, exposes 8080).
    - `cloud-run.testnet.yaml` and `cloud-run.mainnet.yaml` (service config
@@ -99,19 +99,19 @@ Reference material lives in `reference/`; rendered file templates live in
    - `.github/workflows/deploy-<crate>-testnet.yml` (push to `main`).
    - `.github/workflows/deploy-<crate>-mainnet.yml` (tag `v<crate>-*`,
      gated on testnet green).
-8. **Verify** (stop on first failure):
+1. **Verify** (stop on first failure):
 
    ```sh
    bash .claude/skills/nexus-tool-builder/scripts/verify.sh <crate>
    ```
 
    The script runs `cargo check`, `cargo clippy -- -D warnings`,
-   `cargo test`, `cargo fmt --check` (nightly), and a `cargo run`
-   + `/health` + `/meta` smoke test.
+   `cargo test`, `cargo fmt --check` (nightly), and a `cargo run` plus
+   `/health` and `/meta` smoke test.
 
-9. **Audit** by invoking the `nexus-tool-auditor` sub-agent:
+1. **Audit** by invoking the `nexus-tool-auditor` sub-agent:
 
-   ```
+   ```text
    Agent({
      subagent_type: "nexus-tool-auditor",
      description: "Security + conformance audit of <crate>",
@@ -125,7 +125,7 @@ Reference material lives in `reference/`; rendered file templates live in
    Refuse to mark the tool ready if any CRITICAL findings are open.
    For testnet, HIGH findings can be filed as follow-up issues.
 
-10. **Hand off** with the new FQN(s), the path `tools/<crate>/`,
+1. **Hand off** with the new FQN(s), the path `tools/<crate>/`,
     `just tools run <crate>`, the deploy URLs the workflows will create,
     the path to `tools/<crate>/AUDIT.md`, and a reminder to set
     `NEXUS_TOOLKIT_CONFIG_PATH` and `signed_http.mode = "required"` before
@@ -142,19 +142,19 @@ Reference material lives in `reference/`; rendered file templates live in
    ```
 
    Wraps `nexus tool new --name <service>_onchain --template move`.
-2. **Generate** the Move module from
+1. **Generate** the Move module from
    `templates/move/sources/tool.move.tmpl` following
    `reference/onchain-tools.md`:
    - `execute(worksheet: &mut ProofOfUID, …, ctx: &mut TxContext) -> TaggedOutput`
    - `Output` enum with `Ok` / `Err` variants
    - witness object + `witness_id()` getter
-3. **Test:** `sui move test`.
-4. **Audit** by invoking the `nexus-tool-auditor` sub-agent with
+1. **Test:** `sui move test`.
+1. **Audit** by invoking the `nexus-tool-auditor` sub-agent with
    `kind=on-chain` — on-chain tools have the highest blast radius (witness
    bypass, missing authorization, gas grief). Refuse to print the publish
    commands if any CRITICAL findings are open:
 
-   ```
+   ```text
    Agent({
      subagent_type: "nexus-tool-auditor",
      description: "On-chain security audit of <service>_onchain",
@@ -165,7 +165,7 @@ Reference material lives in `reference/`; rendered file templates live in
    })
    ```
 
-5. **Print** (don't run) the publish + register commands for the user to
+1. **Print** (don't run) the publish + register commands for the user to
    execute themselves with their own keys:
 
    ```sh

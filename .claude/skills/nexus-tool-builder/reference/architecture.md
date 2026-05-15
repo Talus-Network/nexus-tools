@@ -4,7 +4,7 @@ Every off-chain tool crate in `tools/<category>-<service>/` follows the
 layout below. The canonical example is `tools/exchanges-coinbase` — read it
 when in doubt.
 
-```
+```text
 tools/<category>-<service>/
 ├── Cargo.toml                       # workspace inheritance; toolkit + sdk + reqwest + schemars + serde + mockito
 ├── README.md                        # one section per FQN — Input ports, Output Variants & Ports, docs link
