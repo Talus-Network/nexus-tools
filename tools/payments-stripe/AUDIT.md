@@ -53,6 +53,7 @@ _No findings._
     leak the api_key.
   - Fix: Drop the raw body. Surface only the status code and the typed
     `kind`:
+
     ```rust
     return Err(StripeErrorResponse {
         reason: format!("Stripe API error (status {})", status),
@@ -60,6 +61,7 @@ _No findings._
         status_code: Some(status.as_u16()),
     });
     ```
+
     If diagnostic detail is needed, write the body to a `tracing::warn!`
     log line with field-level redaction, not to `reason`.
 
@@ -84,9 +86,11 @@ _No findings._
     leaving it implicit creates risk on any subsequent endpoint
     addition that needs longer (e.g. webhook-based flows).
   - Fix: Explicitly override per endpoint, e.g.
+
     ```rust
     fn timeout() -> Duration { Duration::from_secs(15) }
     ```
+
     on every `impl NexusTool`. Document the chosen value next to the
     override.
 
@@ -215,6 +219,7 @@ Expected: never a 5xx, always either `Output::Err` JSON or a structured
 **Recommendation: ready-for-testnet.**
 
 **Blockers for mainnet:**
+
 - M-1 (raw body in fallback `reason`)
 - M-2 (thin error-variant tests on three endpoints)
 - M-3 (explicit `timeout()` override per endpoint)
