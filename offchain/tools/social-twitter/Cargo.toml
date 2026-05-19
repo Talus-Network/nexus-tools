@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "social-twitter"
+path = "src/main.rs"
+
 [dependencies]
 oauth1-request = "0.6.1"
 base64 = "0.13.0"
@@ -29,3 +33,7 @@ nexus-sdk.workspace = true
 
 [dev-dependencies]
 mockito = "1.7.0"
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"
