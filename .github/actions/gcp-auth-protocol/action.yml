@@ -1,0 +1,33 @@
+name: Authenticate to GCP (protocol project)
+description: Authenticate via workload identity to the GCP project that owns GCS + Secret Manager
+inputs:
+  project-id:
+    description: 'GCP project ID'
+    required: true
+  project-number:
+    description: 'GCP project number'
+    required: true
+  provider-name:
+    description: 'Workload identity pool provider name (e.g. nexus-tools-protocol)'
+    required: true
+outputs:
+  credentials_file_path:
+    description: 'Path to the generated credentials file'
+    value: ${{ steps.auth.outputs.credentials_file_path }}
+runs:
+  using: composite
+  steps:
+    - name: Authenticate
+      id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        project_id: ${{ inputs.project-id }}
+        workload_identity_provider: "projects/${{ inputs.project-number }}/locations/global/workloadIdentityPools/${{ inputs.project-id }}/providers/${{ inputs.provider-name }}"
+
+    - name: Setup Python (gcloud needs it)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Setup Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
