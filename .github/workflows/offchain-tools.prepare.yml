@@ -1,0 +1,251 @@
+name: Offchain Tools Prepare
+
+on:
+  workflow_call:
+    inputs:
+      target-ref:
+        required: false
+        type: string
+      matrix-json:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+jobs:
+  prepare:
+    name: "Prepare ${{ matrix.tool }} v${{ matrix.version }}"
+    runs-on: ubuntu-latest
+    environment: >-
+      ${{
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        'testnet'
+      }}
+    strategy:
+      matrix: ${{ fromJson(inputs.matrix-json) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute short SHA + versioned name
+        id: names
+        run: |
+          SHA=${GITHUB_SHA::7}
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "versioned=${{ matrix.tool }}-v${{ matrix.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/${{ matrix.tool }}:sha-${{ steps.names.outputs.sha }}"
+          IMAGE="${IMAGE,,}"
+          docker pull "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Extract --meta
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/prepare/meta"
+          docker run --rm --entrypoint /usr/local/bin/${{ matrix.command }} \
+            "$IMAGE" --meta \
+            > "${RUNNER_TEMP}/prepare/meta/${{ matrix.tool }}.json"
+          echo "::group::Meta for ${{ matrix.tool }}"
+          jq '.[].fqn' "${RUNNER_TEMP}/prepare/meta/${{ matrix.tool }}.json"
+          echo "::endgroup::"
+
+      - name: Render Cloud Run tool config
+        id: render
+        run: |
+          set -euo pipefail
+          DIR="${RUNNER_TEMP}/prepare/gcs/tools"
+          mkdir -p "$DIR"
+          VERSIONED="${{ steps.names.outputs.versioned }}"
+          # matrix.dir is the directory path (e.g. offchain/tools/storage-walrus).
+          TOOLS_JSON="${{ matrix.dir }}/tools.json"
+          EXTRA_ENV=$(jq -c '.environment // {}' "$TOOLS_JSON")
+          RESOURCES=$(jq -c '.resources // {}' "$TOOLS_JSON")
+          jq -n \
+            --arg name "$VERSIONED" \
+            --arg network "${{ vars.SUI_NETWORK }}" \
+            --arg image "nexus-tools/${{ matrix.tool }}" \
+            --arg tag "sha-${{ steps.names.outputs.sha }}" \
+            --arg cmd "${{ matrix.command }}" \
+            --argjson extra_env "$EXTRA_ENV" \
+            --argjson resources "$RESOURCES" \
+            '{
+              name: $name,
+              network: $network,
+              image: $image,
+              tag: $tag,
+              replicas: 1,
+              environment: ({
+                RUST_LOG: "info",
+                BIND_ADDR: "0.0.0.0:8080",
+                NEXUS_TOOLKIT_CONFIG_PATH: "/app/secrets/toolkit-config.json"
+              } + $extra_env),
+              command: $cmd,
+              ports: [{containerPort: 8080}],
+              signed_http: {enabled: true},
+              resources: $resources
+            }' > "$DIR/${VERSIONED}.json"
+          echo "config=$DIR/${VERSIONED}.json" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (protocol)
+        id: auth-gcs
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools-protocol
+
+      - name: Authenticate to GCP (infra)
+        id: auth-infra
+        uses: ./.github/actions/gcp-auth-infra
+        with:
+          project-id: ${{ vars.GCP_INFRA_PROJECT_ID }}
+          project-number: ${{ vars.GCP_INFRA_PROJECT_NUMBER }}
+          provider-name: nexus-tools
+
+      - name: Generate signed HTTP keys (idempotent)
+        run: |
+          set -euo pipefail
+          VERSIONED="${{ steps.names.outputs.versioned }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          META="${RUNNER_TEMP}/prepare/meta/${{ matrix.tool }}.json"
+
+          FQNS=$(jq -r '.[].fqn' "$META" | tr '\n' ' ' | xargs)
+          echo "FQNs for $VERSIONED: $FQNS"
+
+          FORCE_FLAG=""
+          EXISTING=$(gcloud secrets versions access latest \
+            --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+            --project="$PROJECT" 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            EXISTING_FQNS=$(echo "$EXISTING" | jq -r '[.keys_registry[].fqn] | sort | join(" ")')
+            WANTED_FQNS=$(echo "$FQNS" | tr ' ' '\n' | sort | tr '\n' ' ' | xargs)
+            if [ "$EXISTING_FQNS" != "$WANTED_FQNS" ]; then
+              echo "FQNs changed: '$EXISTING_FQNS' -> '$WANTED_FQNS' — forcing new keys"
+              FORCE_FLAG="--force"
+            else
+              echo "FQNs unchanged — skipping keygen"
+              exit 0
+            fi
+          fi
+
+          docker run --rm \
+            -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json \
+            -v "${{ steps.auth-gcs.outputs.credentials_file_path }}:/tmp/creds.json:ro" \
+            gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-next/generate-signed-http-keys:latest \
+            python /app/bin/generate_signed_http_keys.py "nexus-tools" "$VERSIONED" \
+              --fqns $FQNS \
+              --project "$PROJECT" $FORCE_FLAG
+
+      - name: Upload tool config to GCS
+        run: |
+          set -euo pipefail
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+          VERSIONED="${{ steps.names.outputs.versioned }}"
+          LOCAL="${{ steps.render.outputs.config }}"
+          REMOTE="gs://${BUCKET}/${NETWORK}/offchain/tools/${VERSIONED}.json"
+
+          # Preserve existing image tag pinning (only NEW versions adopt build SHA).
+          EXISTING_TAG=$(gsutil cat "$REMOTE" 2>/dev/null | jq -r '.tag // empty' || true)
+          if [ -n "$EXISTING_TAG" ]; then
+            echo "Preserving existing image tag: $EXISTING_TAG"
+            jq --arg t "$EXISTING_TAG" '.tag = $t' "$LOCAL" > "${LOCAL}.tmp"
+            mv "${LOCAL}.tmp" "$LOCAL"
+          fi
+
+          LOCAL_HASH=$(sha256sum "$LOCAL" | cut -c1-16)
+          REMOTE_HASH=$(gsutil cat "$REMOTE" 2>/dev/null | sha256sum | cut -c1-16 || echo "")
+          if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
+            echo "Tool config unchanged — skipping upload"
+          else
+            gsutil cp "$LOCAL" "$REMOTE"
+            echo "Uploaded $REMOTE"
+          fi
+
+      - name: Upload per-tool artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-${{ matrix.tool }}
+          retention-days: 1
+          path: |
+            ${{ runner.temp }}/prepare/meta/${{ matrix.tool }}.json
+            ${{ runner.temp }}/prepare/gcs/tools/${{ steps.names.outputs.versioned }}.json
+
+  aggregate:
+    name: Aggregate prepare artifacts
+    runs-on: ubuntu-latest
+    needs: prepare
+    environment: >-
+      ${{
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        'testnet'
+      }}
+    steps:
+      - name: Download all prepare artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prepare-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/prepare
+
+      - name: Build manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          PREPARE="${{ runner.temp }}/prepare"
+          MANIFEST="${PREPARE}/manifest.json"
+          echo '{}' > "$MANIFEST"
+          MATRIX='${{ inputs.matrix-json }}'
+          echo "$MATRIX" | jq -c '.include[]' | while read -r entry; do
+            TOOL=$(echo "$entry" | jq -r '.tool')
+            VERSION=$(echo "$entry" | jq -r '.version')
+            COMMAND=$(echo "$entry" | jq -r '.command')
+            jq --arg t "$TOOL" --arg v "$VERSION" --arg c "$COMMAND" \
+              '.[$t] = {command: $c, version: $v}' \
+              "$MANIFEST" > "${MANIFEST}.tmp" && mv "${MANIFEST}.tmp" "$MANIFEST"
+          done
+          jq . "$MANIFEST"
+          HASH=$(sha256sum "$MANIFEST" | cut -c1-16)
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (protocol)
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools-protocol
+
+      - name: Upload manifest to GCS (content-addressed)
+        run: |
+          set -euo pipefail
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+          HASH="${{ steps.manifest.outputs.hash }}"
+          REMOTE="gs://${BUCKET}/${NETWORK}/offchain/manifest/${HASH}.json"
+          if gsutil -q stat "$REMOTE" 2>/dev/null; then
+            echo "Manifest ${HASH}.json already exists — skipping"
+          else
+            gsutil cp "${{ runner.temp }}/prepare/manifest.json" "$REMOTE"
+            echo "Uploaded $REMOTE"
+          fi
+
+      - name: Upload bundled prepare artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offchain-tools-prepare
+          retention-days: 1
+          path: ${{ runner.temp }}/prepare/
