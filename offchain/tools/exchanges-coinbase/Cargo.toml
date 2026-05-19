@@ -12,6 +12,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "exchanges-coinbase"
+path = "src/main.rs"
+
 [dependencies]
 chrono.workspace = true
 thiserror.workspace = true
@@ -27,3 +31,7 @@ nexus-sdk.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"
