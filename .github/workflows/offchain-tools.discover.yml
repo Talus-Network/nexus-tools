@@ -1,0 +1,121 @@
+name: Offchain Tools Discover
+
+on:
+  workflow_call:
+    inputs:
+      base-ref:
+        description: 'Base ref to compute changed-files diff against'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      matrix-all:
+        description: 'JSON matrix of every discovered tool'
+        value: ${{ jobs.discover.outputs.matrix-all }}
+      matrix-changed:
+        description: 'JSON matrix of tools whose subtree changed since base-ref'
+        value: ${{ jobs.discover.outputs.matrix-changed }}
+      content-hash:
+        description: 'Aggregate hash of all tools.json + their subtree versions'
+        value: ${{ jobs.discover.outputs.content-hash }}
+
+jobs:
+  discover:
+    name: Discover offchain tools
+    runs-on: ubuntu-latest
+    outputs:
+      matrix-all: ${{ steps.build.outputs.matrix-all }}
+      matrix-changed: ${{ steps.build.outputs.matrix-changed }}
+      content-hash: ${{ steps.build.outputs.content-hash }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changes
+        if: inputs.base-ref != ''
+        uses: tj-actions/changed-files@v46
+        with:
+          base_sha: ${{ inputs.base-ref }}
+          files: |
+            offchain/tools/**
+            offchain/Cargo.toml
+            offchain/Cargo.lock
+            offchain/Dockerfile
+            offchain/rust-toolchain.toml
+
+      - name: Build matrices
+        id: build
+        shell: bash
+        env:
+          CHANGED_FILES: ${{ steps.changes.outputs.all_changed_files }}
+        run: |
+          set -euo pipefail
+          ALL='[]'
+          CHANGED='[]'
+          HASH_INPUT=""
+
+          # Shared files force every tool into the "changed" set.
+          SHARED_TOUCHED=false
+          if [ -n "${CHANGED_FILES:-}" ]; then
+            for f in $CHANGED_FILES; do
+              case "$f" in
+                offchain/Cargo.toml|offchain/Cargo.lock|offchain/Dockerfile|offchain/rust-toolchain.toml)
+                  SHARED_TOUCHED=true
+                  ;;
+              esac
+            done
+          fi
+          echo "Shared files touched: $SHARED_TOUCHED"
+
+          for TOOLS_JSON in offchain/tools/*/tools.json; do
+            [ -f "$TOOLS_JSON" ] || continue
+            DIR=$(dirname "$TOOLS_JSON")
+            TOOL_NAME=$(jq -r '.tool_name' "$TOOLS_JSON")
+            COMMAND=$(jq -r '.command' "$TOOLS_JSON")
+
+            TREE_HASH=$(git rev-parse "HEAD:${DIR}/")
+            CONTENT_HASH=$(printf '%s' "$TREE_HASH" | sha256sum | cut -d' ' -f1)
+            VERSION=$(printf '%d' "0x${CONTENT_HASH:0:8}")
+
+            ENTRY=$(jq -nc \
+              --arg tool "$TOOL_NAME" \
+              --arg dir "$DIR" \
+              --arg cmd "$COMMAND" \
+              --arg ver "$VERSION" \
+              '{tool: $tool, dir: $dir, command: $cmd, version: $ver}')
+
+            ALL=$(echo "$ALL" | jq -c ". + [${ENTRY}]")
+
+            # Is this tool changed?
+            TOOL_CHANGED=false
+            if [ "$SHARED_TOUCHED" = "true" ] || [ -z "${CHANGED_FILES:-}" ]; then
+              TOOL_CHANGED=true
+            else
+              for f in $CHANGED_FILES; do
+                case "$f" in
+                  ${DIR}/*) TOOL_CHANGED=true ;;
+                esac
+              done
+            fi
+            if [ "$TOOL_CHANGED" = "true" ]; then
+              CHANGED=$(echo "$CHANGED" | jq -c ". + [${ENTRY}]")
+            fi
+
+            HASH_INPUT="${HASH_INPUT}${TOOL_NAME}:${VERSION}\n"
+            echo "  - ${TOOL_NAME} v${VERSION} (changed=${TOOL_CHANGED})"
+          done
+
+          CONTENT_HASH=$(printf '%s' "$HASH_INPUT" | sha256sum | cut -c1-16)
+          echo "matrix-all={\"include\":${ALL}}" >> "$GITHUB_OUTPUT"
+          echo "matrix-changed={\"include\":${CHANGED}}" >> "$GITHUB_OUTPUT"
+          echo "content-hash=${CONTENT_HASH}" >> "$GITHUB_OUTPUT"
+
+          echo "::group::matrix-all"
+          echo "$ALL" | jq .
+          echo "::endgroup::"
+          echo "::group::matrix-changed"
+          echo "$CHANGED" | jq .
+          echo "::endgroup::"
