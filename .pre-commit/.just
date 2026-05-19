@@ -1,4 +1,4 @@
-import '../helpers/helpers.just'
+import '../offchain/helpers/helpers.just'
 
 [private]
 _default:
