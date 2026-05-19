@@ -12,6 +12,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "walrus"
+path = "src/main.rs"
+
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
@@ -28,3 +32,7 @@ nexus-sdk = { workspace = true, features = ["walrus"] }
 
 [dev-dependencies]
 mockito.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"
