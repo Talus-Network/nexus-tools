@@ -741,6 +741,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -1120,6 +1121,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "toml",
  "url",
 ]
 
@@ -1677,6 +1679,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -1708,7 +1711,9 @@ dependencies = [
  "nexus-toolkit",
  "schemars",
  "serde",
+ "serde_json",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -3142,6 +3147,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -3374,6 +3380,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -3879,6 +3886,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "toml",
 ]
 
 [[package]]
