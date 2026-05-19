@@ -11,7 +11,9 @@ jobs:
     uses: ./.github/workflows/detect_changes.yml
     with:
       files: |
-        tools/**
+        offchain/tools/**
+        offchain/Cargo.toml
+        offchain/Cargo.lock
 
   update-baseline:
     runs-on: ubuntu-latest

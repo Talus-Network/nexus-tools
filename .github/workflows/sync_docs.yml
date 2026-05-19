@@ -16,7 +16,7 @@ jobs:
     with:
       files: |
         docs/**
-        tools/*/README.md
+        offchain/tools/*/README.md
 
   sync-docs:
     runs-on: ubuntu-latest
@@ -47,13 +47,11 @@ jobs:
             cp -r docs/* gitbook-docs/${{ env.REPO_NAME }}/
           fi
 
-          # Sync README.md files from tools/*/
-          for readme in tools/*/README.md; do
-            if [ -f "$readme" ]; then
-              tool_name=$(basename $(dirname "$readme"))
-              mkdir -p "gitbook-docs/tools/$tool_name"
-              cp "$readme" "gitbook-docs/tools/$tool_name/"
-            fi
+          # Sync README.md files from offchain/tools/*/
+          for readme in offchain/tools/*/README.md; do
+            tool_name=$(basename "$(dirname "$readme")")
+            mkdir -p "gitbook-docs/tools/$tool_name"
+            cp "$readme" "gitbook-docs/tools/$tool_name/"
           done
 
           # Check if any changes were made
