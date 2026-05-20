@@ -169,10 +169,35 @@ jobs:
           gpg-signing-key: ${{ secrets.GPG_DEVOPS_SIGNING_KEY }}
           github-token: ${{ github.token }}
 
+  # ── Trigger tf-nexus-tools apply (reconcile Cloud Run from GCS state) ──
+  # After register has written the new tool's config blob + on-chain entry,
+  # kick the terraform stack so Cloud Run services / ALB / DNS records get
+  # materialized. Uses the org-level GH_ACCESS_TOKEN PAT (same pattern as
+  # ava-game) because GITHUB_TOKEN cannot dispatch workflows in other repos.
+  trigger-tf-apply:
+    needs: [register]
+    if: always() && !cancelled() && needs.register.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
+    steps:
+      - name: Require GH_ACCESS_TOKEN
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_ACCESS_TOKEN secret is not configured on this repo (or not scoped to it)."
+            exit 1
+          fi
+
+      - name: Dispatch tf-nexus-tools terraform apply
+        run: |
+          gh workflow run terraform.yml \
+            --repo Talus-Network/tf-nexus-tools \
+            --ref production
+
   # ── ci-gate: single required status check for branch protection ──
   ci-gate:
     if: always()
-    needs: [discover, deploy, prepare, register, readiness]
+    needs: [discover, deploy, prepare, register, readiness, trigger-tf-apply]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -184,6 +209,7 @@ jobs:
             [prepare]="${{ needs.prepare.result }}"
             [register]="${{ needs.register.result }}"
             [readiness]="${{ needs.readiness.result }}"
+            [trigger-tf-apply]="${{ needs.trigger-tf-apply.result }}"
           )
           for j in "${!r[@]}"; do
             v="${r[$j]}"
