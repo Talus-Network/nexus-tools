@@ -8,7 +8,7 @@ inputs:
     description: 'GCP project number'
     required: true
   provider-name:
-    description: 'Workload identity pool provider name (e.g. nexus-tools-protocol)'
+    description: 'Workload identity pool provider name (e.g. nexus-tools)'
     required: true
 outputs:
   credentials_file_path:

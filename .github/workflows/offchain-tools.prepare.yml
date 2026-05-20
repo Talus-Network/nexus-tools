@@ -113,7 +113,7 @@ jobs:
         with:
           project-id: ${{ vars.GCP_PROJECT_ID }}
           project-number: ${{ vars.GCP_PROJECT_NUMBER }}
-          provider-name: nexus-tools-protocol
+          provider-name: nexus-tools
 
       - name: Authenticate to GCP (infra)
         id: auth-infra
@@ -234,7 +234,7 @@ jobs:
         with:
           project-id: ${{ vars.GCP_PROJECT_ID }}
           project-number: ${{ vars.GCP_PROJECT_NUMBER }}
-          provider-name: nexus-tools-protocol
+          provider-name: nexus-tools
 
       - name: Upload manifest to GCS (content-addressed)
         run: |

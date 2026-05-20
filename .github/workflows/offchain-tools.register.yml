@@ -50,7 +50,7 @@ jobs:
         with:
           project-id: ${{ vars.GCP_PROJECT_ID }}
           project-number: ${{ vars.GCP_PROJECT_NUMBER }}
-          provider-name: nexus-tools-protocol
+          provider-name: nexus-tools
 
       - name: Authenticate to GCP (infra)
         uses: ./.github/actions/gcp-auth-infra
