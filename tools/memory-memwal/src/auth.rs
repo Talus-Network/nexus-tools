@@ -1,16 +1,26 @@
 //! Ed25519 request signing for the MemWal relayer.
 //!
-//! Every protected route requires three headers constructed from the operator's
+//! Every protected route requires four headers constructed from the operator's
 //! Ed25519 delegate private key (held in `MEMWAL_DELEGATE_PRIVATE_KEY`):
 //!
 //! ```text
 //! x-public-key : hex(public_key)
 //! x-timestamp  : unix_seconds
-//! x-signature  : hex(Ed25519_sign(key, "{ts}.{METHOD}.{path}.{sha256hex(body)}"))
+//! x-nonce      : UUID v4 (one per request — checked server-side against Redis
+//!                for replay protection; 600 s TTL)
+//! x-signature  : hex(Ed25519_sign(key,
+//!                  "{ts}.{METHOD}.{path}.{sha256hex(body)}.{nonce}.{account_id}"))
 //! ```
 //!
-//! Timestamps must fall within a 5-minute window of the server clock to prevent
-//! replay attacks (enforced server-side).
+//! `{account_id}` is the empty string when the optional `x-account-id` header
+//! is not sent — the relayer derives the account from the public key on chain.
+//!
+//! Replay protection: the relayer rejects any timestamp outside a ±5-minute
+//! window of its clock, and rejects any nonce it has seen in the last 10 min.
+//! Together these mean we MUST mint a fresh UUID per request.
+//!
+//! Backwards compatibility: missing `x-nonce` returns HTTP 426 Upgrade Required
+//! (the relayer's signal that the client is a legacy SDK that needs to upgrade).
 
 use {
     crate::error::AuthError,
@@ -24,18 +34,29 @@ pub(crate) struct AuthHeaders {
     pub(crate) public_key: String,
     pub(crate) signature: String,
     pub(crate) timestamp: String,
+    pub(crate) nonce: String,
 }
 
-/// Build the three MemWal auth headers for a single request.
+/// Build the MemWal auth headers for a single request.
 ///
-/// `method` must be the HTTP method in uppercase (e.g. `"POST"`).
-/// `path`   must be the request path including the leading `/` (e.g. `"/api/remember"`).
-/// `body`   is the raw request body bytes; pass an empty slice for requests with no body.
+/// `method`     must be the HTTP method in uppercase (e.g. `"POST"`).
+/// `path`       must be the request path including the leading `/` (e.g. `"/api/remember"`).
+/// `body`       is the raw request body bytes; pass an empty slice for requests with no body.
+/// `account_id` is the MemWal account object ID. Pass `""` when not configured
+///              — the server then resolves the account from the public key
+///              via an on-chain registry scan (slower path, may 401 if the
+///              key isn't registered to any account yet). Whatever value is
+///              passed here MUST match what the caller sends in the
+///              `x-account-id` header.
+///
+/// A fresh UUID v4 nonce is minted on every call — never re-use one or the
+/// server will reject the request as a replay.
 pub(crate) fn sign_request(
     private_key_hex: &str,
     method: &str,
     path: &str,
     body: &[u8],
+    account_id: &str,
 ) -> Result<AuthHeaders, AuthError> {
     if private_key_hex.is_empty() {
         return Err(AuthError::MissingKey);
@@ -47,8 +68,12 @@ pub(crate) fn sign_request(
         .as_secs()
         .to_string();
 
+    let nonce = uuid::Uuid::new_v4().to_string();
     let body_hash = hex::encode(Sha256::digest(body));
-    let message = format!("{ts}.{method}.{path}.{body_hash}");
+
+    // Canonical message — must match the relayer's auth.rs verbatim, see
+    // services/server/src/auth.rs.
+    let message = format!("{ts}.{method}.{path}.{body_hash}.{nonce}.{account_id}");
 
     let raw: Vec<u8> = hex::decode(private_key_hex)?;
     let key_bytes: [u8; 32] = raw
@@ -62,6 +87,7 @@ pub(crate) fn sign_request(
         public_key: hex::encode(signing_key.verifying_key().to_bytes()),
         signature: hex::encode(signature.to_bytes()),
         timestamp: ts,
+        nonce,
     })
 }
 
@@ -79,12 +105,13 @@ mod tests {
     #[test]
     fn sign_request_returns_headers() {
         let key = random_key_hex();
-        let h = sign_request(&key, "POST", "/api/remember", b"{\"text\":\"hello\"}")
+        let h = sign_request(&key, "POST", "/api/remember", b"{\"text\":\"hello\"}", "")
             .expect("should sign successfully");
 
         assert!(!h.public_key.is_empty(), "public_key must not be empty");
         assert!(!h.signature.is_empty(), "signature must not be empty");
         assert!(!h.timestamp.is_empty(), "timestamp must not be empty");
+        assert!(!h.nonce.is_empty(), "nonce must not be empty");
         assert!(
             h.public_key.len() == 64,
             "public_key is 32 bytes = 64 hex chars"
@@ -95,11 +122,32 @@ mod tests {
         );
     }
 
+    /// `sign_request` mints a fresh UUID-formatted nonce on every call.
+    /// Failure mode caught: a static or empty nonce would trigger replay
+    /// rejection (or HTTP 426) on the second invocation against the relayer.
+    #[test]
+    fn sign_request_nonce_is_unique_uuid_per_call() {
+        let key = random_key_hex();
+        let h1 = sign_request(&key, "POST", "/api/remember", b"{}", "").unwrap();
+        let h2 = sign_request(&key, "POST", "/api/remember", b"{}", "").unwrap();
+        assert_ne!(h1.nonce, h2.nonce, "nonce must differ across calls");
+        assert!(
+            uuid::Uuid::parse_str(&h1.nonce).is_ok(),
+            "nonce must be a valid UUID; got {}",
+            h1.nonce
+        );
+        assert!(
+            uuid::Uuid::parse_str(&h2.nonce).is_ok(),
+            "nonce must be a valid UUID; got {}",
+            h2.nonce
+        );
+    }
+
     /// `sign_request` with an empty key returns `AuthError::MissingKey`.
     /// Failure mode caught: missing key is silently ignored, producing unauthenticated requests.
     #[test]
     fn sign_request_rejects_empty_key() {
-        let result = sign_request("", "POST", "/api/remember", b"{}");
+        let result = sign_request("", "POST", "/api/remember", b"{}", "");
         assert!(
             matches!(result, Err(AuthError::MissingKey)),
             "empty key must yield MissingKey"
@@ -110,7 +158,7 @@ mod tests {
     /// Failure mode caught: bad key bypasses signing and produces garbage headers.
     #[test]
     fn sign_request_rejects_non_hex_key() {
-        let result = sign_request("not-hex!!", "POST", "/api/remember", b"{}");
+        let result = sign_request("not-hex!!", "POST", "/api/remember", b"{}", "");
         assert!(
             matches!(result, Err(AuthError::InvalidHex(_))),
             "non-hex key must yield InvalidHex"
@@ -122,7 +170,7 @@ mod tests {
     #[test]
     fn sign_request_rejects_wrong_length_key() {
         let short_key = hex::encode([0u8; 16]); // 16 bytes, not 32
-        let result = sign_request(&short_key, "POST", "/api/remember", b"{}");
+        let result = sign_request(&short_key, "POST", "/api/remember", b"{}", "");
         assert!(
             matches!(result, Err(AuthError::InvalidKeyLength(16))),
             "16-byte key must yield InvalidKeyLength(16)"
@@ -135,8 +183,8 @@ mod tests {
     #[test]
     fn sign_request_same_key_same_pubkey() {
         let key = random_key_hex();
-        let h1 = sign_request(&key, "POST", "/api/recall", b"{\"query\":\"foo\"}").unwrap();
-        let h2 = sign_request(&key, "POST", "/api/recall", b"{\"query\":\"foo\"}").unwrap();
+        let h1 = sign_request(&key, "POST", "/api/recall", b"{\"query\":\"foo\"}", "").unwrap();
+        let h2 = sign_request(&key, "POST", "/api/recall", b"{\"query\":\"foo\"}", "").unwrap();
         assert_eq!(
             h1.public_key, h2.public_key,
             "same key must yield same public key"
@@ -148,7 +196,7 @@ mod tests {
     #[test]
     fn sign_request_handles_empty_body() {
         let key = random_key_hex();
-        let result = sign_request(&key, "GET", "/api/remember/some-job-id", b"");
+        let result = sign_request(&key, "GET", "/api/remember/some-job-id", b"", "");
         assert!(result.is_ok(), "empty body must be handled gracefully");
     }
 }

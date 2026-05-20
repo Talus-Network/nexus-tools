@@ -1,8 +1,31 @@
 # Memory Tools (MemWal)
 
-A Nexus Tool bundle exposing four memory operations backed by the
-[MemWal](https://memwal.ai) relayer: store a memory, search memories, answer
-questions from memory, and extract & store facts from text.
+A Nexus Tool bundle exposing seven memory operations backed by the
+[MemWal](https://memwal.ai) relayer:
+
+- `remember` / `remember_bulk` — store one or up to 20 memories
+- `recall` — semantic search over stored memories
+- `ask` — memory-augmented Q&A (LLM with retrieved context)
+- `analyze` — extract facts from text and store each as a memory
+- `forget` — delete every memory in a namespace
+- `stats` — report memory count and storage bytes for a namespace
+
+## Pinned MemWal release
+
+This crate's wire format (canonical signed message, header names, endpoint
+paths, request/response shapes) is derived from the relayer source at tag
+[`@mysten-incubation/memwal@0.0.4`](https://github.com/MystenLabs/MemWal/tree/%40mysten-incubation%2Fmemwal%400.0.4/services/server)
+(commit `0cd0862ade`, server `Cargo.toml` version `0.1.0`). The HEAD of `main`
+at the time of writing differs from this tag only in MCP documentation —
+no Rust source changes — so this pin is byte-equivalent to the running
+production / staging relayers. `health_check()` compares the relayer's
+self-reported `/health` version against `MEMWAL_API_VERSION` and fails fast
+on mismatch.
+
+When the relayer publishes a new tag whose `auth.rs`, `types.rs`,
+`routes.rs`, or `rate_limit.rs` change, update the pin: bump
+`MEMWAL_API_VERSION` in `src/client.rs`, re-audit those four files at the
+new tag, and update this section accordingly.
 
 ## Build & Run
 
@@ -20,9 +43,10 @@ BIND_ADDR=0.0.0.0:9000 cargo run --package memory-memwal
 ## Environment Variables
 
 | Variable | Required | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `MEMWAL_DELEGATE_PRIVATE_KEY` | **yes** | — | Hex-encoded 32-byte Ed25519 (Elliptic Curve Digital Signature Algorithm) delegate private key |
-| `MEMWAL_SERVER_URL` | no | `https://relayer.memwal.ai` | MemWal relayer base URL |
+| `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). When set, sent as `x-account-id` and embedded in the signed canonical message — matches the JS SDK 1:1 and skips the relayer's slow on-chain registry scan. |
+| `MEMWAL_SERVER_URL` | no | `https://relayer.staging.memwal.ai` (testnet) | MemWal relayer base URL. Set to `https://relayer.memwal.ai` for mainnet. |
 
 The per-invocation `server_url` input field on every tool overrides
 `MEMWAL_SERVER_URL` for that single call.
@@ -271,4 +295,146 @@ curl -s -X POST http://127.0.0.1:8080/memory/analyze/invoke \
   -H 'Content-Type: application/json' \
   -d '{"text": "..."}'
 # {"ok":{"job_count":0}}
+```
+
+---
+
+# `xyz.taluslabs.memory.memwal.remember_bulk@1`
+
+Store up to 20 memories in a single batched call. The relayer rate-limits
+`/api/remember` at weight 5 per call but `/api/remember/bulk` at weight 10 for
+up to 20 items — a 10× efficiency gain when batching is feasible. The call
+blocks until every item is durably written; a single failed item fails the
+whole batch.
+
+## Input
+
+**`items`: `Array`** *(required, 1–20 entries)*
+
+Each entry has:
+
+- **`text`: `String`** *(required)* — the text to store.
+- **`namespace`: `String`** *(optional)* — namespace for this item. A single
+  bulk call can write to multiple namespaces.
+
+**`server_url`: `String`** *(optional)*
+
+Override the relayer URL for this invocation.
+
+## Output Variants & Ports
+
+**`ok`**
+
+Every item was durably stored.
+
+- **`ok.blob_ids`: `Array<String>`** — Walrus blob identifiers, in the same
+  order as the input `items`.
+
+**`err`**
+
+The batch was rejected (e.g. >20 items) or any individual item failed.
+
+- **`err.reason`: `String`** — Human-readable error description.
+
+## Example
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/memory/remember_bulk/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "items": [
+      {"text": "Paris is the capital of France"},
+      {"text": "Tokyo is the capital of Japan"},
+      {"text": "Madrid is the capital of Spain"}
+    ]
+  }'
+# {"ok":{"blob_ids":["<blob1>","<blob2>","<blob3>"]}}
+```
+
+---
+
+# `xyz.taluslabs.memory.memwal.forget@1`
+
+Delete every memory in a namespace. Owner-scoped — only memories belonging to
+the authenticated account are removed. Lifecycle complement to `remember`:
+useful for clearing scratch namespaces at the end of a DAG run, or for
+recovering quota before the 1 GB per-account cap is hit.
+
+## Input
+
+**`namespace`: `String`** *(optional)*
+
+The namespace to clear. Defaults to `"default"` on the server when omitted.
+
+**`server_url`: `String`** *(optional)*
+
+Override the relayer URL for this invocation.
+
+## Output Variants & Ports
+
+**`ok`**
+
+Deletion completed.
+
+- **`ok.deleted`: `u64`** — number of memories removed. Zero is a valid
+  success (the namespace was empty or did not exist).
+
+**`err`**
+
+- **`err.reason`: `String`** — Human-readable error description.
+
+## Example
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/memory/forget/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace": "scratch-pad"}'
+# {"ok":{"deleted":12}}
+
+# Clearing an empty namespace is fine
+curl -s -X POST http://127.0.0.1:8080/memory/forget/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace": "never-used"}'
+# {"ok":{"deleted":0}}
+```
+
+---
+
+# `xyz.taluslabs.memory.memwal.stats@1`
+
+Report the number of memories and total encrypted byte size stored in a
+namespace for the authenticated account. Useful as a quota guard before
+heavy writes — the relayer enforces 1 GB per-account storage and starts
+returning HTTP 402 once that's exceeded.
+
+## Input
+
+**`namespace`: `String`** *(optional)*
+
+Defaults to `"default"` on the server when omitted.
+
+**`server_url`: `String`** *(optional)*
+
+Override the relayer URL for this invocation.
+
+## Output Variants & Ports
+
+**`ok`**
+
+- **`ok.memory_count`: `i64`** — number of memories in the namespace.
+- **`ok.storage_bytes`: `i64`** — total encrypted byte size on Walrus.
+- **`ok.namespace`: `String`** — the resolved namespace (mirrors what the
+  server interpreted; `"default"` when the input was omitted).
+
+**`err`**
+
+- **`err.reason`: `String`** — Human-readable error description.
+
+## Example
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/memory/stats/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace": "people"}'
+# {"ok":{"memory_count":17,"storage_bytes":5242880,"namespace":"people"}}
 ```

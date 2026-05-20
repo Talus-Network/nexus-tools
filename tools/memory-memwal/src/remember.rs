@@ -49,6 +49,7 @@ pub(crate) enum Output {
 pub(crate) struct RememberMemory {
     /// Relayer URL resolved from env at startup; can be overridden per-call.
     default_api_base: String,
+    account_id: String,
     /// Hex-encoded Ed25519 delegate private key.
     private_key_hex: String,
 }
@@ -62,6 +63,7 @@ impl NexusTool for RememberMemory {
         Self {
             default_api_base: client.api_base,
             private_key_hex: client.private_key_hex,
+            account_id: client.account_id,
         }
     }
 
@@ -78,7 +80,11 @@ impl NexusTool for RememberMemory {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(self.default_api_base.clone(), self.private_key_hex.clone());
+        let client = MemWalClient::new(
+            self.default_api_base.clone(),
+            self.private_key_hex.clone(),
+            self.account_id.clone(),
+        );
         // Key must be present and valid before any call can succeed.
         client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
         client
@@ -92,7 +98,7 @@ impl NexusTool for RememberMemory {
         let api_base = input
             .server_url
             .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone());
+        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
 
         let job_id = match client
             .remember(&input.text, input.namespace.as_deref())
@@ -127,6 +133,7 @@ mod tests {
         RememberMemory {
             default_api_base: server_url.to_string(),
             private_key_hex: hex::encode([0x42u8; 32]),
+            account_id: String::new(),
         }
     }
 

@@ -47,6 +47,7 @@ pub(crate) enum Output {
 pub(crate) struct AnalyzeAndRemember {
     default_api_base: String,
     private_key_hex: String,
+    account_id: String,
 }
 
 impl NexusTool for AnalyzeAndRemember {
@@ -58,6 +59,7 @@ impl NexusTool for AnalyzeAndRemember {
         Self {
             default_api_base: client.api_base,
             private_key_hex: client.private_key_hex,
+            account_id: client.account_id,
         }
     }
 
@@ -74,7 +76,11 @@ impl NexusTool for AnalyzeAndRemember {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(self.default_api_base.clone(), self.private_key_hex.clone());
+        let client = MemWalClient::new(
+            self.default_api_base.clone(),
+            self.private_key_hex.clone(),
+            self.account_id.clone(),
+        );
         client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
         client
             .health_check()
@@ -87,7 +93,7 @@ impl NexusTool for AnalyzeAndRemember {
         let api_base = input
             .server_url
             .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone());
+        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
 
         match client
             .analyze(&input.text, input.namespace.as_deref())
@@ -111,6 +117,7 @@ mod tests {
         AnalyzeAndRemember {
             default_api_base: server_url.to_string(),
             private_key_hex: hex::encode([0x42u8; 32]),
+            account_id: String::new(),
         }
     }
 

@@ -71,6 +71,7 @@ pub(crate) enum Output {
 pub(crate) struct RecallMemories {
     default_api_base: String,
     private_key_hex: String,
+    account_id: String,
 }
 
 impl NexusTool for RecallMemories {
@@ -82,6 +83,7 @@ impl NexusTool for RecallMemories {
         Self {
             default_api_base: client.api_base,
             private_key_hex: client.private_key_hex,
+            account_id: client.account_id,
         }
     }
 
@@ -98,7 +100,11 @@ impl NexusTool for RecallMemories {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(self.default_api_base.clone(), self.private_key_hex.clone());
+        let client = MemWalClient::new(
+            self.default_api_base.clone(),
+            self.private_key_hex.clone(),
+            self.account_id.clone(),
+        );
         client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
         client
             .health_check()
@@ -111,7 +117,7 @@ impl NexusTool for RecallMemories {
         let api_base = input
             .server_url
             .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone());
+        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
 
         // Resolve the effective namespace so we can populate it on each result
         // (the relayer does not echo it per-item in the response).
@@ -146,6 +152,7 @@ mod tests {
         RecallMemories {
             default_api_base: server_url.to_string(),
             private_key_hex: hex::encode([0x42u8; 32]),
+            account_id: String::new(),
         }
     }
 

@@ -25,8 +25,7 @@ serde_json.workspace = true
 sha2.workspace      = true
 thiserror.workspace = true
 tokio.workspace     = true
+uuid.workspace      = true
 
 [dev-dependencies]
-memwal-test-server = { path = "../memwal-test-server" }
 mockito.workspace      = true
-serial_test.workspace  = true

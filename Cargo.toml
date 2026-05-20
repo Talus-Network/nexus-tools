@@ -36,6 +36,7 @@ strum = "0.27"
 strum_macros = "0.27"
 thiserror = "2.0.12"
 tokio = { version = "1.49.0", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
 warp = "0.3.7"
 
 # === Nexus deps ===
