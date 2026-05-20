@@ -54,8 +54,7 @@ To deploy work from `main` to testnet, open a `promote/<topic>` PR with
 base `testnet` and head `main`. The readiness check is red until you
 trigger the `CI` workflow with the PR number; the chain ops run and
 push a signed empty commit back to your PR, flipping readiness green.
-Merge once green. See the design spec for details:
-[docs/superpowers/specs/2026-05-19-offchain-tools-pipeline-design.md](docs/superpowers/specs/2026-05-19-offchain-tools-pipeline-design.md).
+Merge once green.
 
 <!-- List of references -->
 
