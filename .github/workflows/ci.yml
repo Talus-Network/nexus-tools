@@ -60,7 +60,8 @@ jobs:
       target-ref: ${{ needs.resolve-target.outputs.base-ref || (github.event_name == 'pull_request' && github.base_ref) || github.ref_name }}
       matrix-json: >-
         ${{
-          (github.event_name == 'pull_request') && needs.discover.outputs.matrix-changed
+          (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'main'))
+            && needs.discover.outputs.matrix-changed
           || needs.discover.outputs.matrix-all
         }}
       dry-run: ${{ github.event_name == 'pull_request' }}
@@ -71,7 +72,7 @@ jobs:
     needs: [discover, deploy, resolve-target]
     if: >-
       always() && !cancelled() && needs.deploy.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'workflow_dispatch' && inputs.pr-number != '') ||
        (github.event_name == 'push' && (github.ref_name == 'testnet' || github.ref_name == 'mainnet')))
     uses: ./.github/workflows/offchain-tools.prepare.yml
     with:
