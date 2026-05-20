@@ -202,6 +202,10 @@ jobs:
         'testnet'
       }}
     steps:
+      # Required so the local composite action gcp-auth-protocol resolves.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all prepare artifacts
         uses: actions/download-artifact@v4
         with:

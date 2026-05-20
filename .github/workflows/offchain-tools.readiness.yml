@@ -24,6 +24,10 @@ jobs:
       matrix: ${{ fromJson(inputs.matrix-json) }}
       fail-fast: false
     steps:
+      # Required so the local composite action gcp-auth-protocol resolves.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Authenticate to GCP (protocol)
         uses: ./.github/actions/gcp-auth-protocol
         with:
