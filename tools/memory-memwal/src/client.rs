@@ -31,10 +31,11 @@ use {
     ed25519_dalek::SigningKey,
     serde::{Deserialize, Serialize},
     std::{
+        collections::HashMap,
         sync::{Arc, Once, OnceLock},
         time::Duration,
     },
-    tokio::time::sleep,
+    tokio::time::{sleep, Instant},
     url::Url,
 };
 
@@ -213,11 +214,37 @@ pub(crate) const ENV_PRIVATE_KEY: &str = "MEMWAL_DELEGATE_PRIVATE_KEY";
 /// keyed by public key, which is slower and more fragile.
 pub(crate) const ENV_ACCOUNT_ID: &str = "MEMWAL_ACCOUNT_ID";
 
-/// Delay between job-status polls.
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// First poll fires after this delay so a job that completes quickly is
+/// observed without waiting a full back-off cycle.
+const POLL_INITIAL: Duration = Duration::from_millis(100);
 
-/// Maximum number of poll attempts before giving up (~15 s total).
-const MAX_POLLS: u32 = 30;
+/// Upper bound on the inter-poll delay during exponential backoff. Caps how
+/// much rate-limit budget a single slow job can spend.
+const POLL_MAX: Duration = Duration::from_secs(4);
+
+/// Wall-clock budget for a single `poll_job` / `poll_bulk_jobs` call before
+/// it gives up with `MemWalError::Timeout`. Sized for Walrus tail-latency
+/// — erasure-coded shard replication can take 30-60 s under load.
+const POLL_BUDGET: Duration = Duration::from_secs(60);
+
+/// Terminal statuses from the relayer's job-state machine. Anything else
+/// (`pending`, `running`, `uploaded`) is in-progress; anything not in this
+/// set or the in-progress set surfaces as an error rather than looping.
+const STATUS_DONE: &str = "done";
+const STATUS_FAILED: &str = "failed";
+const STATUS_PENDING: &str = "pending";
+const STATUS_RUNNING: &str = "running";
+const STATUS_UPLOADED: &str = "uploaded";
+
+fn is_in_progress(status: &str) -> bool {
+    matches!(status, STATUS_PENDING | STATUS_RUNNING | STATUS_UPLOADED)
+}
+
+/// Exponential backoff with capping. Each call doubles the delay until it
+/// reaches POLL_MAX.
+fn next_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(POLL_MAX)
+}
 
 // ---------------------------------------------------------------------------
 // API response shapes
@@ -311,6 +338,17 @@ pub(crate) struct BulkStatusItem {
 #[derive(Deserialize)]
 pub(crate) struct BulkStatusResponse {
     pub(crate) results: Vec<BulkStatusItem>,
+}
+
+/// Response from `GET /health`. The relayer reports `{"status": "ok",
+/// "version": "0.1.0", "mode": "production"}` — additional fields are
+/// allowed and ignored. We require `version` so missing/typo cases fail
+/// loudly per the maintenance-pin contract on [`MEMWAL_API_VERSION`].
+#[derive(Deserialize)]
+struct HealthResponse {
+    #[allow(dead_code)]
+    status: String,
+    version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -590,27 +628,51 @@ impl MemWalClient {
         Ok(resp.job_id)
     }
 
-    /// `GET /api/remember/:job_id` — poll until the job reaches a terminal state.
-    /// Returns the `blob_id` on success.
+    /// `GET /api/remember/:job_id` — poll until the job reaches a terminal
+    /// state. Returns the `blob_id` on success.
     ///
-    /// Terminal statuses from the server: `"done"` (success) and `"failed"`.
-    /// Intermediate statuses `"pending"`, `"running"`, `"uploaded"` are treated
-    /// as still in progress.
+    /// Polling cadence is exponential: a 100 ms initial probe (so jobs that
+    /// finish quickly resolve quickly), doubling up to a 4 s ceiling, until
+    /// the 60 s wall-clock budget is exhausted. An unrecognized status from
+    /// the server is treated as an error rather than looped on so a future
+    /// status addition cannot stall the call indefinitely.
+    ///
+    /// **Cancel-safety:** the polling loop itself is cancel-safe — dropping
+    /// the returned future releases the HTTP connection and the timer
+    /// cleanly. **The server-side job is not cancellable**: once the initial
+    /// POST returned 202, the relayer writes the Walrus blob regardless of
+    /// whether the caller still listens. A dropped poll leaks one blob
+    /// reference; operators sensitive to storage cost must not cancel.
     pub(crate) async fn poll_job(&self, job_id: &str) -> Result<String, MemWalError> {
         let path = format!("/api/remember/{job_id}");
-        for _ in 0..MAX_POLLS {
-            sleep(POLL_INTERVAL).await;
+        let deadline = Instant::now() + POLL_BUDGET;
+        let mut delay = POLL_INITIAL;
+
+        loop {
+            sleep(delay).await;
             let status: JobStatusResponse = self.get(&path).await?.json().await?;
             match status.status.as_str() {
-                "done" => {
-                    return Ok(status.blob_id.unwrap_or_default());
+                STATUS_DONE => {
+                    return status.blob_id.ok_or_else(|| {
+                        MemWalError::Server(format!(
+                            "job {job_id} reached terminal status `done` but \
+                             blob_id is missing from the response"
+                        ))
+                    });
                 }
-                "failed" => return Err(MemWalError::JobFailed(job_id.to_string())),
-                // "pending" | "running" | "uploaded" → still in progress
-                _ => {}
+                STATUS_FAILED => return Err(MemWalError::JobFailed(job_id.to_string())),
+                s if is_in_progress(s) => {}
+                other => {
+                    return Err(MemWalError::Server(format!(
+                        "job {job_id} returned unrecognized status `{other}`"
+                    )));
+                }
             }
+            if Instant::now() >= deadline {
+                return Err(MemWalError::Timeout(job_id.to_string()));
+            }
+            delay = next_backoff(delay);
         }
-        Err(MemWalError::Timeout(job_id.to_string()))
     }
 
     /// `POST /api/recall` — semantic search over stored memories.
@@ -755,14 +817,21 @@ impl MemWalClient {
         Ok(resp.job_ids)
     }
 
-    /// `POST /api/remember/bulk/status` — poll every job once. Iterates the
-    /// batched endpoint until all jobs reach a terminal state (`done` or
-    /// `failed`) or the global timeout fires.
+    /// `POST /api/remember/bulk/status` — poll batched jobs until every one
+    /// reaches a terminal state or the wall-clock budget runs out. Returns
+    /// blob_ids in the same order as `job_ids`. Any individual `failed`
+    /// surfaces as `Err(JobFailed)` identifying the first failure.
     ///
-    /// Returns blob_ids in the same order as `job_ids` on success. If any
-    /// individual job ends `failed`, returns an `Err(JobFailed(job_id))`
-    /// identifying the first failure — callers that want partial-success
-    /// semantics should call [`MemWalClient::poll_bulk_status_once`] instead.
+    /// Two optimizations over the naïve poll-all-every-time approach:
+    /// - A terminal-state `HashMap` caches jobs that already finished, so
+    ///   each subsequent poll only queries the still-pending subset
+    ///   (relayer pays less work; rate-limit budget shrinks with completion).
+    /// - Lookups during result assembly are O(1) via the same map — no
+    ///   per-poll O(N²) linear scan.
+    ///
+    /// **Cancel-safety:** same caveat as [`MemWalClient::poll_job`] — the
+    /// local loop drops cleanly, but the server-side bulk writes complete
+    /// regardless. Dropping mid-poll can leak up to `MAX_BULK_ITEMS` blobs.
     pub(crate) async fn poll_bulk_jobs(
         &self,
         job_ids: &[String],
@@ -770,50 +839,72 @@ impl MemWalClient {
         if job_ids.is_empty() {
             return Ok(Vec::new());
         }
-        for _ in 0..MAX_POLLS {
-            sleep(POLL_INTERVAL).await;
-            let statuses = self.poll_bulk_status_once(job_ids).await?;
-            // Index-correlate input order; the relayer returns results in
-            // input order, but we still verify by job_id to be defensive.
-            let mut all_done = true;
-            for want_id in job_ids {
-                let entry = statuses
-                    .iter()
-                    .find(|s| s.job_id == *want_id)
-                    .ok_or_else(|| {
-                        MemWalError::Server(format!("bulk status response missing job {want_id}"))
-                    })?;
-                match entry.status.as_str() {
-                    "done" => {}
-                    "failed" => return Err(MemWalError::JobFailed(want_id.clone())),
-                    // pending | running | uploaded
-                    _ => {
-                        all_done = false;
-                        break;
+        let deadline = Instant::now() + POLL_BUDGET;
+        let mut delay = POLL_INITIAL;
+        let mut terminal: HashMap<String, BulkStatusItem> = HashMap::with_capacity(job_ids.len());
+
+        loop {
+            let pending: Vec<String> = job_ids
+                .iter()
+                .filter(|id| !terminal.contains_key(*id))
+                .cloned()
+                .collect();
+            if pending.is_empty() {
+                break;
+            }
+
+            sleep(delay).await;
+            let statuses = self.poll_bulk_status_once(&pending).await?;
+            let by_id: HashMap<&str, &BulkStatusItem> =
+                statuses.iter().map(|s| (s.job_id.as_str(), s)).collect();
+
+            for id in &pending {
+                let Some(item) = by_id.get(id.as_str()) else {
+                    return Err(MemWalError::Server(format!(
+                        "bulk status response missing job {id}"
+                    )));
+                };
+                match item.status.as_str() {
+                    STATUS_DONE | STATUS_FAILED => {
+                        terminal.insert(id.clone(), (*item).clone());
+                    }
+                    s if is_in_progress(s) => {}
+                    other => {
+                        return Err(MemWalError::Server(format!(
+                            "job {id} returned unrecognized status `{other}`"
+                        )));
                     }
                 }
             }
-            if all_done {
-                return job_ids
-                    .iter()
-                    .map(|want_id| {
-                        statuses
-                            .iter()
-                            .find(|s| s.job_id == *want_id)
-                            .and_then(|s| s.blob_id.clone())
-                            .ok_or_else(|| {
-                                MemWalError::Server(format!(
-                                    "job {want_id} reached done but blob_id missing"
-                                ))
-                            })
-                    })
-                    .collect();
+
+            if Instant::now() >= deadline {
+                return Err(MemWalError::Timeout(format!(
+                    "{} bulk jobs did not finish in time",
+                    job_ids.len() - terminal.len()
+                )));
             }
+            delay = next_backoff(delay);
         }
-        Err(MemWalError::Timeout(format!(
-            "{} bulk jobs did not finish in time",
-            job_ids.len()
-        )))
+
+        // All jobs terminal — assemble in input order, surface first failure.
+        job_ids
+            .iter()
+            .map(|id| {
+                let item = terminal.get(id).expect("loop only exits when terminal covers job_ids");
+                match item.status.as_str() {
+                    STATUS_DONE => item.blob_id.clone().ok_or_else(|| {
+                        MemWalError::Server(format!(
+                            "job {id} reached terminal status `done` but \
+                             blob_id is missing"
+                        ))
+                    }),
+                    STATUS_FAILED => Err(MemWalError::JobFailed(id.clone())),
+                    other => Err(MemWalError::Server(format!(
+                        "job {id} terminal cache holds non-terminal status `{other}`"
+                    ))),
+                }
+            })
+            .collect()
     }
 
     /// Single shot of `POST /api/remember/bulk/status`. Returns whatever the
@@ -838,33 +929,38 @@ impl MemWalClient {
     /// `GET /health` — check whether the relayer is reachable and on the
     /// expected API version.
     ///
-    /// The health endpoint is public (no auth required). When the response
-    /// body contains a `"version"` field, it is compared against
-    /// [`MEMWAL_API_VERSION`]. A mismatch means the deployed relayer has been
-    /// upgraded to an incompatible version and the tools need updating.
+    /// The health endpoint is public (no auth required). The response must
+    /// be JSON with a `"version"` string field that matches
+    /// [`MEMWAL_API_VERSION`]; a missing field, wrong type, non-JSON body,
+    /// or mismatched version is a failure. The maintenance-pin contract
+    /// stated on [`MEMWAL_API_VERSION`] depends on this check actually
+    /// being enforced — a "best-effort" version check is the same as no
+    /// check at all.
     pub(crate) async fn health_check(&self) -> Result<(), MemWalError> {
         let url = self.join_path("/health")?;
         let resp = self.http.get(url).send().await?;
-
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             return Err(MemWalError::Server(format!(
                 "relayer health returned HTTP {}",
-                resp.status().as_u16()
+                status.as_u16()
             )));
         }
-
-        // Version check: if the relayer reports a version, it must match ours.
-        if let Ok(body) = resp.json::<serde_json::Value>().await {
-            if let Some(server_ver) = body.get("version").and_then(|v| v.as_str()) {
-                if server_ver != MEMWAL_API_VERSION {
-                    return Err(MemWalError::Server(format!(
-                        "relayer version mismatch: tools expect {MEMWAL_API_VERSION}, \
-                         server reports {server_ver} — update the tools or pin the relayer"
-                    )));
-                }
-            }
+        let body: HealthResponse = resp.json().await.map_err(|e| {
+            MemWalError::Server(format!("relayer /health did not return JSON: {e}"))
+        })?;
+        let server_ver = body.version.ok_or_else(|| {
+            MemWalError::Server(
+                "relayer /health did not return a `version` field — pre-pinned-tag relayer?"
+                    .into(),
+            )
+        })?;
+        if server_ver != MEMWAL_API_VERSION {
+            return Err(MemWalError::Server(format!(
+                "relayer version mismatch: tools expect {MEMWAL_API_VERSION}, \
+                 server reports {server_ver} — update the tools or pin the relayer"
+            )));
         }
-
         Ok(())
     }
 
@@ -973,5 +1069,89 @@ mod tests {
     fn classify_key_ok_on_all_ones_32_bytes() {
         let key = hex::encode([0xffu8; 32]);
         assert_eq!(classify_key(Some(&key)), KeyValidation::Ok(key));
+    }
+
+    fn make_client(server_url: &str) -> MemWalClient {
+        MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), "")
+    }
+
+    /// `health_check` returns `Ok(())` when `/health` returns the pinned version.
+    /// Failure mode caught: a version comparison that silently accepts any
+    /// response would surface here as a passing test against a deliberately
+    /// matching version mock; we then can flip the mock to verify failure
+    /// in the sibling tests.
+    #[tokio::test]
+    async fn health_check_ok_on_matching_version() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({"status": "ok", "version": MEMWAL_API_VERSION}).to_string(),
+            )
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        assert!(client.health_check().await.is_ok());
+    }
+
+    /// `health_check` returns `Err` when `/health` reports a different
+    /// version. The MEMWAL_API_VERSION pin is the maintenance contract;
+    /// silently accepting a mismatch defeats the audit trail.
+    #[tokio::test]
+    async fn health_check_err_on_mismatched_version() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({"status": "ok", "version": "9.9.9"}).to_string())
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        let err = client.health_check().await.expect_err("version mismatch must Err");
+        assert!(
+            err.to_string().contains("9.9.9"),
+            "error must mention the server version; got: {err}"
+        );
+    }
+
+    /// `health_check` returns `Err` when `/health` omits `version`.
+    /// Failure mode caught: a degraded relayer that drops the version field
+    /// would silently look healthy under the previous best-effort check.
+    #[tokio::test]
+    async fn health_check_err_when_version_missing() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({"status": "ok"}).to_string())
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        let err = client.health_check().await.expect_err("missing version must Err");
+        assert!(
+            err.to_string().contains("version"),
+            "error must mention version; got: {err}"
+        );
+    }
+
+    /// `health_check` returns `Err` when the body is not JSON at all.
+    /// Failure mode caught: a misconfigured reverse proxy serving an HTML
+    /// error page would parse-fail silently and the call would short-circuit
+    /// to Ok under a permissive `if let Ok(...)` pattern.
+    #[tokio::test]
+    async fn health_check_err_on_non_json_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_body("<html>nginx error page</html>")
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        assert!(client.health_check().await.is_err());
     }
 }

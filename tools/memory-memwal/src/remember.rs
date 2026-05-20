@@ -204,6 +204,53 @@ mod tests {
         );
     }
 
+    /// `invoke` returns `Err` when the server replies `"done"` without a
+    /// `blob_id` field — the missing identifier must NOT be silently coerced
+    /// to an empty string.
+    /// Failure mode caught: a regression of `unwrap_or_default()` in
+    /// `poll_job` would propagate `blob_id: ""` to downstream DAG vertices
+    /// as if the write had succeeded.
+    #[tokio::test]
+    async fn invoke_returns_err_when_done_missing_blob_id() {
+        let mut server = Server::new_async().await;
+        let tool = make_tool(&server.url());
+
+        let _m1 = server
+            .mock("POST", "/api/remember")
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(json!({"job_id": "job-noid", "status": "pending"}).to_string())
+            .create_async()
+            .await;
+
+        // status=done but no blob_id field.
+        let _m2 = server
+            .mock("GET", "/api/remember/job-noid")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({"job_id": "job-noid", "status": "done"}).to_string())
+            .create_async()
+            .await;
+
+        let output = tool
+            .invoke(Input {
+                text: "text".into(),
+                namespace: None,
+            })
+            .await;
+        match output {
+            Output::Err { reason } => {
+                assert!(
+                    reason.contains("blob_id"),
+                    "error must mention missing blob_id; got: {reason}"
+                );
+            }
+            Output::Ok { blob_id } => {
+                panic!("expected Err, got Ok(blob_id={blob_id:?}); silent empty-blob bug")
+            }
+        }
+    }
+
     /// `invoke` sends the `text` field in the POST body.
     /// Failure mode caught: body serialisation drops the `text` field.
     #[tokio::test]
