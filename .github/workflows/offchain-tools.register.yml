@@ -107,10 +107,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Verbose tracing so a silent set -e exit reveals which command fired.
+          set -x
+
           MANIFEST="${{ steps.artifacts.outputs.manifest }}"
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
           NETWORK="${{ vars.SUI_NETWORK }}"
+
+          echo "=== Prepare artifact contents ==="
+          ls -la "$(dirname "$MANIFEST")" || true
+          ls -la "$META_DIR" || true
+          echo "=== Manifest ==="
+          cat "$MANIFEST"
+          echo "=== End manifest ==="
 
           REGISTERED=$(nexus tool list --json 2>/dev/null | jq -r '.[].fqn' 2>/dev/null || true)
           echo "::group::Already registered"; echo "$REGISTERED"; echo "::endgroup::"
@@ -120,9 +130,16 @@ jobs:
           echo "Using coin: $COIN_ID"
 
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            echo "=== Processing TOOL=$TOOL ==="
             META="${META_DIR}/${TOOL}.json"
+            if [ ! -f "$META" ]; then
+              echo "::error::Meta file not found: $META (META_DIR contents:)"
+              ls -la "$META_DIR" >&2 || true
+              exit 1
+            fi
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
             COUNT=$(jq 'length' "$META")
+            echo "  TOOL=$TOOL VERSION=$VERSION COUNT=$COUNT META=$META"
             for i in $(seq 0 $((COUNT - 1))); do
               FQN=$(jq -r ".[$i].fqn" "$META")
               TOOL_URL="http://${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
