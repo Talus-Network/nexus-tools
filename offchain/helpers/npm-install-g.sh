@@ -2,10 +2,11 @@
 
 set -euo pipefail
 
-# Go to the root of the git repository
-cd $(git rev-parse --show-toplevel)
+# Resolve the directory containing this script so the npm-install-g.txt
+# lookup works regardless of the caller's PWD.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Install NPM stuff from helpers/npm-install-g.txt
+# Install NPM stuff from the sibling helpers/npm-install-g.txt
 while read -r tool_at_version; do
   # Split the tool name and version
   tool=$(echo "$tool_at_version" | cut -d'@' -f1)
@@ -16,4 +17,4 @@ while read -r tool_at_version; do
   else
     echo "Tool already installed: $tool_at_version"
   fi
-done < helpers/npm-install-g.txt
+done < "$SCRIPT_DIR/npm-install-g.txt"
