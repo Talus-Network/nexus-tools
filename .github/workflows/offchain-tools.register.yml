@@ -125,7 +125,13 @@ jobs:
           REGISTERED=$(nexus tool list --json 2>/dev/null | jq -r '.[].fqn' 2>/dev/null || true)
           echo "::group::Already registered"; echo "$REGISTERED"; echo "::endgroup::"
 
-          to_bytes() { printf '%s' "$1" | xxd -i -c 9999 | grep '0x' | tr -d ' \n' | sed 's/,$//'; }
+          # Empty input would trip pipefail via `grep '0x'` finding no match,
+          # killing the script silently inside a $() assignment. Short-circuit
+          # so empty input produces empty output (=> Move `vector[]`).
+          to_bytes() {
+            [ -z "${1:-}" ] && return 0
+            printf '%s' "$1" | xxd -i -c 9999 | grep '0x' | tr -d ' \n' | sed 's/,$//'
+          }
           COIN_ID=$(sui client gas --json | jq -r '.[0].gasCoinId')
           echo "Using coin: $COIN_ID"
 
