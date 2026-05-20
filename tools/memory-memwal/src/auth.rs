@@ -204,8 +204,15 @@ mod tests {
     #[test]
     fn sign_request_returns_headers() {
         let (sk, pk_hex) = test_key();
-        let h = sign_request(&sk, &pk_hex, "POST", "/api/remember", b"{\"text\":\"hello\"}", "")
-            .expect("should sign successfully");
+        let h = sign_request(
+            &sk,
+            &pk_hex,
+            "POST",
+            "/api/remember",
+            b"{\"text\":\"hello\"}",
+            "",
+        )
+        .expect("should sign successfully");
 
         assert_eq!(h.public_key, pk_hex);
         assert!(!h.signature.is_empty());
@@ -234,8 +241,24 @@ mod tests {
     #[test]
     fn sign_request_same_key_same_pubkey() {
         let (sk, pk_hex) = test_key();
-        let h1 = sign_request(&sk, &pk_hex, "POST", "/api/recall", b"{\"query\":\"foo\"}", "").unwrap();
-        let h2 = sign_request(&sk, &pk_hex, "POST", "/api/recall", b"{\"query\":\"foo\"}", "").unwrap();
+        let h1 = sign_request(
+            &sk,
+            &pk_hex,
+            "POST",
+            "/api/recall",
+            b"{\"query\":\"foo\"}",
+            "",
+        )
+        .unwrap();
+        let h2 = sign_request(
+            &sk,
+            &pk_hex,
+            "POST",
+            "/api/recall",
+            b"{\"query\":\"foo\"}",
+            "",
+        )
+        .unwrap();
         assert_eq!(h1.public_key, h2.public_key);
     }
 

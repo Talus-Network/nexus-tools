@@ -42,8 +42,12 @@ pub(crate) struct Input {
 pub(crate) enum Output {
     /// Every item was durably stored. `blob_ids` aligns positionally with the
     /// input `items` array (i.e. `blob_ids[i]` is the blob for `items[i]`).
-    Ok { blob_ids: Vec<String> },
-    Err { reason: String },
+    Ok {
+        blob_ids: Vec<String>,
+    },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct RememberBulkMemories {
@@ -270,7 +274,9 @@ mod tests {
     async fn invoke_returns_err_on_oversized_batch() {
         let server = Server::new_async().await;
         let tool = make_tool(&server.url());
-        let texts: Vec<String> = (0..MAX_BULK_ITEMS + 1).map(|i| format!("item-{i}")).collect();
+        let texts: Vec<String> = (0..MAX_BULK_ITEMS + 1)
+            .map(|i| format!("item-{i}"))
+            .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let output = tool.invoke(bulk_input(&refs)).await;
         match output {

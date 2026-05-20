@@ -27,8 +27,12 @@ pub(crate) struct Input {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
     /// Memory was durably stored. `blob_id` is its Walrus blob identifier.
-    Ok { blob_id: String },
-    Err { reason: String },
+    Ok {
+        blob_id: String,
+    },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct RememberMemory {
@@ -125,8 +129,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                json!({"job_id": "job-abc", "status": "done", "blob_id": "blob-xyz"})
-                    .to_string(),
+                json!({"job_id": "job-abc", "status": "done", "blob_id": "blob-xyz"}).to_string(),
             )
             .create_async()
             .await;

@@ -32,8 +32,12 @@ pub(crate) struct Input {
 pub(crate) enum Output {
     /// Facts were submitted for storage. `job_count` is the number of
     /// individual memory-write jobs enqueued on the server.
-    Ok { job_count: u32 },
-    Err { reason: String },
+    Ok {
+        job_count: u32,
+    },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct AnalyzeAndRemember {

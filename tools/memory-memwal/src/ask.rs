@@ -53,7 +53,9 @@ pub(crate) enum Output {
         answer: String,
         sources: Vec<AnswerSource>,
     },
-    Err { reason: String },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct AskMemory {

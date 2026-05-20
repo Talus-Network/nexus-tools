@@ -28,8 +28,12 @@ pub(crate) enum Output {
     /// Namespace was cleared. `deleted` is the number of memories removed
     /// (zero is a valid success — the namespace existed but was empty, or
     /// did not exist at all).
-    Ok { deleted: u64 },
-    Err { reason: String },
+    Ok {
+        deleted: u64,
+    },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct ForgetMemories {

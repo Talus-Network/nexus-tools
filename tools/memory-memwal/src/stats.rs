@@ -32,7 +32,9 @@ pub(crate) enum Output {
         /// The resolved namespace (mirrors what the server interpreted).
         namespace: String,
     },
-    Err { reason: String },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct StatsForAccount {
@@ -139,7 +141,7 @@ mod tests {
     }
 
     /// `invoke` returns `Ok` with zeros for a namespace that exists but is empty.
-    /// Failure mode caught: zero-memory namespaces mis-classified as Err.
+    /// Failure mode caught: zero-memory namespaces misclassified as Err.
     #[tokio::test]
     async fn invoke_handles_zero_counts() {
         let mut server = Server::new_async().await;

@@ -170,9 +170,7 @@ pub(crate) fn validate_credentials_at_startup() -> Result<(), String> {
 fn read_validated_private_key() -> Result<Option<Zeroizing<String>>, String> {
     // `env::var` returns a fresh `String` — wrap it immediately so that
     // intermediate copy is also zeroed on drop.
-    let raw = std::env::var(ENV_PRIVATE_KEY)
-        .ok()
-        .map(Zeroizing::new);
+    let raw = std::env::var(ENV_PRIVATE_KEY).ok().map(Zeroizing::new);
     match classify_key(raw.as_deref().map(|z| z.as_str())) {
         KeyValidation::Ok(k) => Ok(Some(k)),
         KeyValidation::Missing => {
@@ -368,7 +366,10 @@ pub(crate) enum JobStatus {
 
 impl JobStatus {
     fn is_in_progress(self) -> bool {
-        matches!(self, JobStatus::Pending | JobStatus::Running | JobStatus::Uploaded)
+        matches!(
+            self,
+            JobStatus::Pending | JobStatus::Running | JobStatus::Uploaded
+        )
     }
 }
 
@@ -509,8 +510,8 @@ fn parse_relayer_url(raw: &str, allow_insecure: bool) -> Result<Url, MemWalError
     // and then mistyped the rest would otherwise leak them into stderr,
     // log files, and (because each tool's `new()` panics on Config) into
     // the panic message itself.
-    let url = Url::parse(raw)
-        .map_err(|e| MemWalError::Config(format!("invalid relayer URL: {e}")))?;
+    let url =
+        Url::parse(raw).map_err(|e| MemWalError::Config(format!("invalid relayer URL: {e}")))?;
     let scheme = url.scheme();
     let scheme_ok = scheme == "https" || (allow_insecure && scheme == "http");
     if !scheme_ok {
@@ -601,9 +602,7 @@ impl MemWalClient {
             }
         };
 
-        let account_id: Arc<str> = std::env::var(ENV_ACCOUNT_ID)
-            .unwrap_or_default()
-            .into();
+        let account_id: Arc<str> = std::env::var(ENV_ACCOUNT_ID).unwrap_or_default().into();
 
         Ok(Self {
             http: shared_http(),
@@ -617,7 +616,11 @@ impl MemWalClient {
     /// mockito) and a hex key; panics on parse failure since tests should
     /// not be exercising the error path.
     #[cfg(test)]
-    pub(crate) fn with_test_config(api_base: &str, private_key_hex: &str, account_id: &str) -> Self {
+    pub(crate) fn with_test_config(
+        api_base: &str,
+        private_key_hex: &str,
+        account_id: &str,
+    ) -> Self {
         let url = Url::parse(api_base).expect("test URL must parse");
         let (signing_key, public_key_hex) =
             parse_signing_key(private_key_hex).expect("test key must parse");
@@ -892,7 +895,10 @@ impl MemWalClient {
     }
 
     /// `POST /api/stats` — memory count + stored byte total for a namespace.
-    pub(crate) async fn stats(&self, namespace: Option<&str>) -> Result<StatsResponse, MemWalError> {
+    pub(crate) async fn stats(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<StatsResponse, MemWalError> {
         #[derive(Serialize)]
         struct Req<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -933,7 +939,10 @@ impl MemWalClient {
         let req = Req {
             items: items
                 .iter()
-                .map(|(text, ns)| Item { text, namespace: *ns })
+                .map(|(text, ns)| Item {
+                    text,
+                    namespace: *ns,
+                })
                 .collect(),
         };
         let resp: RememberBulkResponse =
@@ -1015,7 +1024,9 @@ impl MemWalClient {
         job_ids
             .iter()
             .map(|id| {
-                let item = terminal.get(id).expect("loop only exits when terminal covers job_ids");
+                let item = terminal
+                    .get(id)
+                    .expect("loop only exits when terminal covers job_ids");
                 match item.status {
                     JobStatus::Done => item.blob_id.clone().ok_or_else(|| {
                         MemWalError::Server(format!(
@@ -1074,8 +1085,7 @@ impl MemWalClient {
         })?;
         let server_ver = body.version.ok_or_else(|| {
             MemWalError::Server(
-                "relayer /health did not return a `version` field — pre-pinned-tag relayer?"
-                    .into(),
+                "relayer /health did not return a `version` field — pre-pinned-tag relayer?".into(),
             )
         })?;
         if server_ver != MEMWAL_API_VERSION {
@@ -1123,7 +1133,7 @@ mod tests {
     /// A canonical 32-byte hex key is classified as `Ok` and the original
     /// hex string is preserved verbatim (the signer uses the hex form, not
     /// re-encoded bytes).
-    /// Failure mode caught: a valid key is mis-classified as Invalid, which
+    /// Failure mode caught: a valid key is misclassified as Invalid, which
     /// would abort the binary on the happy path.
     #[test]
     fn classify_key_ok_on_valid_32_byte_hex() {
@@ -1191,7 +1201,10 @@ mod tests {
     #[test]
     fn classify_key_ok_on_all_ones_32_bytes() {
         let key = hex::encode([0xffu8; 32]);
-        assert_eq!(classify_key(Some(&key)), KeyValidation::Ok(Zeroizing::new(key)));
+        assert_eq!(
+            classify_key(Some(&key)),
+            KeyValidation::Ok(Zeroizing::new(key))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1231,7 +1244,8 @@ mod tests {
     /// been removed) downgrade signing material to cleartext.
     #[test]
     fn parse_relayer_url_rejects_http_when_insecure_disallowed() {
-        let err = parse_relayer_url("http://relayer.memwal.ai", false).expect_err("must reject http");
+        let err =
+            parse_relayer_url("http://relayer.memwal.ai", false).expect_err("must reject http");
         assert!(err.to_string().contains("https"));
     }
 
@@ -1264,7 +1278,8 @@ mod tests {
     /// rewriting what the operator configured.
     #[test]
     fn parse_relayer_url_rejects_path() {
-        let err = parse_relayer_url("https://relayer.memwal.ai/v1", false).expect_err("path must be rejected");
+        let err = parse_relayer_url("https://relayer.memwal.ai/v1", false)
+            .expect_err("path must be rejected");
         assert!(err.to_string().contains("path"));
     }
 
@@ -1274,7 +1289,8 @@ mod tests {
     /// signed-path semantics, depending on the relayer's parsing.
     #[test]
     fn parse_relayer_url_rejects_query() {
-        let err = parse_relayer_url("https://relayer.memwal.ai/?leak=1", false).expect_err("query must be rejected");
+        let err = parse_relayer_url("https://relayer.memwal.ai/?leak=1", false)
+            .expect_err("query must be rejected");
         assert!(err.to_string().contains("query") || err.to_string().contains("fragment"));
     }
 
@@ -1283,7 +1299,8 @@ mod tests {
     /// usually stripped client-side but should not be silently accepted.
     #[test]
     fn parse_relayer_url_rejects_fragment() {
-        let err = parse_relayer_url("https://relayer.memwal.ai/#frag", false).expect_err("fragment must be rejected");
+        let err = parse_relayer_url("https://relayer.memwal.ai/#frag", false)
+            .expect_err("fragment must be rejected");
         assert!(err.to_string().contains("query") || err.to_string().contains("fragment"));
     }
 
@@ -1294,7 +1311,8 @@ mod tests {
     /// — pointless against this relayer and an unintended exposure.
     #[test]
     fn parse_relayer_url_rejects_userinfo_username_only() {
-        let err = parse_relayer_url("https://user@relayer.memwal.ai", false).expect_err("userinfo must be rejected");
+        let err = parse_relayer_url("https://user@relayer.memwal.ai", false)
+            .expect_err("userinfo must be rejected");
         assert!(err.to_string().contains("credentials"));
     }
 
@@ -1305,7 +1323,8 @@ mod tests {
     /// the no-echo policy was put in place.
     #[test]
     fn parse_relayer_url_rejects_userinfo_with_password() {
-        let err = parse_relayer_url("https://user:secret@relayer.memwal.ai", false).expect_err("userinfo must be rejected");
+        let err = parse_relayer_url("https://user:secret@relayer.memwal.ai", false)
+            .expect_err("userinfo must be rejected");
         assert!(err.to_string().contains("credentials"));
     }
 
@@ -1362,7 +1381,10 @@ mod tests {
             .create_async()
             .await;
         let client = make_client(&server.url());
-        let err = client.health_check().await.expect_err("version mismatch must Err");
+        let err = client
+            .health_check()
+            .await
+            .expect_err("version mismatch must Err");
         assert!(
             err.to_string().contains("9.9.9"),
             "error must mention the server version; got: {err}"
@@ -1383,7 +1405,10 @@ mod tests {
             .create_async()
             .await;
         let client = make_client(&server.url());
-        let err = client.health_check().await.expect_err("missing version must Err");
+        let err = client
+            .health_check()
+            .await
+            .expect_err("missing version must Err");
         assert!(
             err.to_string().contains("version"),
             "error must mention version; got: {err}"
@@ -1432,7 +1457,9 @@ mod tests {
         let err = client.forget(None).await.expect_err("429 must Err");
         assert!(matches!(
             err,
-            MemWalError::RateLimited { retry_after_secs: None }
+            MemWalError::RateLimited {
+                retry_after_secs: None
+            }
         ));
     }
 

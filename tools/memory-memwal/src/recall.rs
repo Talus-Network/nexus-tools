@@ -57,7 +57,9 @@ pub(crate) enum Output {
         results: Vec<RecalledMemory>,
         namespace: String,
     },
-    Err { reason: String },
+    Err {
+        reason: String,
+    },
 }
 
 pub(crate) struct RecallMemories {
@@ -98,11 +100,7 @@ impl NexusTool for RecallMemories {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let ns = input
-            .namespace
-            .as_deref()
-            .unwrap_or("default")
-            .to_string();
+        let ns = input.namespace.as_deref().unwrap_or("default").to_string();
 
         match self
             .client
