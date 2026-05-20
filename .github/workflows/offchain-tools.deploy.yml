@@ -65,12 +65,14 @@ jobs:
           set -euo pipefail
           SHA=${{ steps.sha.outputs.short }}
           GHCR="ghcr.io/${{ github.repository }}/${{ matrix.tool }}:sha-${SHA}"
-          # Note: repository path is lowercased by GHCR automatically.
-          echo "ghcr=${GHCR,,}" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.dry-run }}" = "false" ]; then
-            GCR="gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-tools/${{ matrix.tool }}:sha-${SHA}"
-            echo "gcr=${GCR}" >> "$GITHUB_OUTPUT"
-          fi
+          {
+            echo "list<<EOF"
+            echo "${GHCR,,}"
+            if [ "${{ inputs.dry-run }}" = "false" ]; then
+              echo "gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-tools/${{ matrix.tool }}:sha-${SHA}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -83,8 +85,6 @@ jobs:
             PACKAGE=${{ matrix.tool }}
             BINARY=${{ matrix.command }}
             TOOL_FQN_VERSION=${{ matrix.version }}
-          tags: |
-            ${{ steps.tags.outputs.ghcr }}
-            ${{ steps.tags.outputs.gcr }}
+          tags: ${{ steps.tags.outputs.list }}
           cache-from: type=gha,scope=offchain-${{ matrix.tool }}
           cache-to: type=gha,mode=max,scope=offchain-${{ matrix.tool }}
