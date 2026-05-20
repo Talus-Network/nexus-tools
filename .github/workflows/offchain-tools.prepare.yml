@@ -74,12 +74,18 @@ jobs:
           TOOLS_JSON="${{ matrix.dir }}/tools.json"
           EXTRA_ENV=$(jq -c '.environment // {}' "$TOOLS_JSON")
           RESOURCES=$(jq -c '.resources // {}' "$TOOLS_JSON")
+          # nexus_contracts_tag is captured at prepare time and persisted into
+          # the per-tool config blob, so the (tool, version) pair is pinned to
+          # whichever nexus version was current when it was first prepared.
+          # Future NEXUS_TAG bumps only affect NEW deployments; existing
+          # services keep their original allowed-leaders mount path.
           jq -n \
             --arg name "$VERSIONED" \
             --arg network "${{ vars.SUI_NETWORK }}" \
             --arg image "nexus-tools/${{ matrix.tool }}" \
             --arg tag "sha-${{ steps.names.outputs.sha }}" \
             --arg cmd "${{ matrix.command }}" \
+            --arg nexus_tag "${{ vars.NEXUS_TAG }}" \
             --argjson extra_env "$EXTRA_ENV" \
             --argjson resources "$RESOURCES" \
             '{
@@ -87,6 +93,7 @@ jobs:
               network: $network,
               image: $image,
               tag: $tag,
+              nexus_contracts_tag: $nexus_tag,
               replicas: 1,
               environment: ({
                 RUST_LOG: "info",
