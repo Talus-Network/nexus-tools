@@ -96,7 +96,7 @@ jobs:
             else
               for f in $CHANGED_FILES; do
                 case "$f" in
-                  ${DIR}/*) TOOL_CHANGED=true ;;
+                  "${DIR}/"*) TOOL_CHANGED=true ;;
                 esac
               done
             fi
