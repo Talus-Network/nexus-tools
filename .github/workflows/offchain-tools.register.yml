@@ -11,10 +11,6 @@ permissions:
   contents: read
   id-token: write
 
-env:
-  NEXUS_TAG: ${{ vars.NEXUS_TAG }}
-  SUI_CHANNEL: ${{ vars.SUI_CHANNEL }}
-
 jobs:
   register:
     name: Register offchain tools
@@ -66,7 +62,7 @@ jobs:
       - name: Install Nexus CLI
         uses: ./.github/actions/install-nexus-cli
         with:
-          nexus-tag: ${{ env.NEXUS_TAG }}
+          nexus-tag: ${{ vars.NEXUS_TAG }}
           infra-registry: gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}
 
       - name: Configure wallet and Nexus
@@ -85,7 +81,7 @@ jobs:
 
           NETWORK="${{ vars.SUI_NETWORK }}"
           wget -q -O "$RUNNER_TEMP/objects.toml" \
-            "https://storage.googleapis.com/production-talus-sui-objects/${{ env.NEXUS_TAG }}/objects.${NETWORK}.toml?t=$(date +%s)"
+            "https://storage.googleapis.com/production-talus-sui-objects/${{ vars.NEXUS_TAG }}/objects.${NETWORK}.toml?t=$(date +%s)"
 
           mkdir -p "$HOME/.nexus"
           cp "$RUNNER_TEMP/objects.toml" "$HOME/.nexus/objects.${NETWORK}.toml"
