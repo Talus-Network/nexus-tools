@@ -1207,6 +1207,76 @@ mod tests {
         );
     }
 
+    /// `Debug` impl on `KeyValidation::Ok` redacts the hex secret.
+    /// Failure mode caught: a future refactor switches the manual `Debug` impl
+    /// back to a derive, or someone accidentally prints `{:?}` on a
+    /// KeyValidation — either way, the delegate key would land in a log line
+    /// or panic message. This test asserts the redaction is structural.
+    #[test]
+    fn key_validation_debug_redacts_secret() {
+        let key_hex = hex::encode([0x42u8; 32]);
+        let v = KeyValidation::Ok(Zeroizing::new(key_hex.clone()));
+        let debug_output = format!("{v:?}");
+        assert!(
+            !debug_output.contains(&key_hex),
+            "Debug output must not contain the hex secret. Got: {debug_output}"
+        );
+        assert_eq!(debug_output, "Ok(<redacted>)");
+    }
+
+    /// `Debug` impl on the other two variants still emits informative text
+    /// (no redaction needed — they don't carry secrets).
+    /// Failure mode caught: an over-zealous redaction sweep silently strips
+    /// the `Invalid` reason, hiding the actual misconfiguration from the
+    /// startup log line.
+    #[test]
+    fn key_validation_debug_preserves_non_secret_variants() {
+        assert_eq!(format!("{:?}", KeyValidation::Missing), "Missing");
+        let reason = "is set but is not valid hex (...)".to_string();
+        let dbg = format!("{:?}", KeyValidation::Invalid(reason.clone()));
+        assert!(dbg.contains(&reason), "Invalid must show its reason: {dbg}");
+    }
+
+    /// `PartialEq` distinguishes every cross-variant pair.
+    /// Failure mode caught: a hand-written `eq` that accidentally returns
+    /// `true` on cross-variant comparisons would let miscategorized inputs
+    /// slip through equality checks.
+    #[test]
+    fn key_validation_partial_eq_cross_variants_differ() {
+        let v_ok = KeyValidation::Ok(Zeroizing::new("x".into()));
+        let v_missing = KeyValidation::Missing;
+        let v_invalid = KeyValidation::Invalid("r".into());
+        assert_ne!(v_ok, v_missing);
+        assert_ne!(v_ok, v_invalid);
+        assert_ne!(v_missing, v_invalid);
+    }
+
+    /// `check_text_len` accepts an input exactly at the cap, rejects one
+    /// byte over, and the error message names the cap and the actual size.
+    /// Failure mode caught: an off-by-one on the `>` vs `>=` comparison,
+    /// or an error message that doesn't help the operator diagnose what
+    /// they sent.
+    #[test]
+    fn check_text_len_boundary() {
+        let at_limit = "x".repeat(MAX_TEXT_BYTES);
+        assert!(check_text_len("text", &at_limit).is_ok());
+
+        let over_limit = "x".repeat(MAX_TEXT_BYTES + 1);
+        match check_text_len("text", &over_limit) {
+            Err(MemWalError::Config(reason)) => {
+                assert!(
+                    reason.contains(&MAX_TEXT_BYTES.to_string()),
+                    "reason must mention the cap; got: {reason}"
+                );
+                assert!(
+                    reason.contains(&(MAX_TEXT_BYTES + 1).to_string()),
+                    "reason must mention the actual size; got: {reason}"
+                );
+            }
+            other => panic!("expected Config(...), got {other:?}"),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // parse_relayer_url policy tests
     //

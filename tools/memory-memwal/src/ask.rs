@@ -122,6 +122,25 @@ mod tests {
         }
     }
 
+    /// `health()` returns `Ok` when the relayer reports the matching API version.
+    /// Failure mode caught: the tool's NexusTool::health wrapper drops the
+    /// validate_key + health_check composition.
+    #[tokio::test]
+    async fn health_returns_ok_when_relayer_healthy() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({"status": "ok", "version": crate::client::MEMWAL_API_VERSION}).to_string(),
+            )
+            .create_async()
+            .await;
+        let tool = make_tool(&server.url());
+        assert!(tool.health().await.is_ok());
+    }
+
     /// `invoke` returns the LLM answer and its sources on a successful call.
     /// Failure mode caught: successful ask response incorrectly mapped to `Err`.
     #[tokio::test]
