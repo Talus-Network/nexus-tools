@@ -75,7 +75,7 @@ impl NexusTool for GetProductTicker {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.exchanges.coinbase.get-product-ticker@1")
+        fqn!(concat!("xyz.taluslabs.exchanges.coinbase.get-product-ticker@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

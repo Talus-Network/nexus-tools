@@ -58,7 +58,7 @@ impl NexusTool for DeleteTweet {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.delete-tweet@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.delete-tweet@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

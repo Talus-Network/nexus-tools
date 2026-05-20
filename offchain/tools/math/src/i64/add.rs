@@ -34,7 +34,7 @@ impl NexusTool for I64Add {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.math.i64.add@1")
+        fqn!(concat!("xyz.taluslabs.math.i64.add@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

@@ -144,7 +144,7 @@ impl NexusTool for GetUserByUsername {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-user-by-username@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-user-by-username@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

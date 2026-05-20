@@ -63,7 +63,7 @@ impl NexusTool for SendMessageToGroupConversation {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.send-message-to-group-conversation@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.send-message-to-group-conversation@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

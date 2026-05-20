@@ -63,7 +63,7 @@ impl NexusTool for RetweetTweet {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.retweet-tweet@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.retweet-tweet@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

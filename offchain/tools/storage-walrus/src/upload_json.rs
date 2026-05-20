@@ -98,7 +98,7 @@ impl NexusTool for UploadJson {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.storage.walrus.upload-json@1")
+        fqn!(concat!("xyz.taluslabs.storage.walrus.upload-json@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

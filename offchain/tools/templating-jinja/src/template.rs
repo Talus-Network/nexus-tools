@@ -67,7 +67,7 @@ impl NexusTool for TemplatingJinja {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.templating.jinja@1")
+        fqn!(concat!("xyz.taluslabs.templating.jinja@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

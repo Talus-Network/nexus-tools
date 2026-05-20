@@ -83,7 +83,7 @@ impl NexusTool for GetListMembers {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-list-members@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-list-members@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

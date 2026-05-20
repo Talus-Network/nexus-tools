@@ -83,7 +83,7 @@ impl NexusTool for GetSpotPrice {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.exchanges.coinbase.get-spot-price@1")
+        fqn!(concat!("xyz.taluslabs.exchanges.coinbase.get-spot-price@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

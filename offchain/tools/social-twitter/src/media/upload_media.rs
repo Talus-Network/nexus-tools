@@ -132,7 +132,7 @@ impl NexusTool for UploadMedia {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.upload-media@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.upload-media@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

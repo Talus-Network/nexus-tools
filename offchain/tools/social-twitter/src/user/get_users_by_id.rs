@@ -102,7 +102,7 @@ impl NexusTool for GetUsersById {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-users-by-id@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-users-by-id@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

@@ -57,7 +57,7 @@ impl NexusTool for DeleteList {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.delete-list@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.delete-list@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

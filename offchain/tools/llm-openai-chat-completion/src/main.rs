@@ -265,7 +265,7 @@ impl NexusTool for OpenaiChatCompletion {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.llm.openai.chat-completion@1")
+        fqn!(concat!("xyz.taluslabs.llm.openai.chat-completion@", env!("TOOL_FQN_VERSION")))
     }
 
     fn timeout() -> std::time::Duration {

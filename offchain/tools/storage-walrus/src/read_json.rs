@@ -96,7 +96,7 @@ impl NexusTool for ReadJson {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.storage.walrus.read-json@1")
+        fqn!(concat!("xyz.taluslabs.storage.walrus.read-json@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

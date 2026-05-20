@@ -93,7 +93,7 @@ impl NexusTool for UploadFile {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.storage.walrus.upload-file@1")
+        fqn!(concat!("xyz.taluslabs.storage.walrus.upload-file@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

@@ -66,7 +66,7 @@ impl NexusTool for SendDirectMessage {
 
     // /:participant_id/dm_events
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.send-direct-message@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.send-direct-message@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

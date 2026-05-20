@@ -67,7 +67,7 @@ impl NexusTool for ReadFile {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.storage.walrus.read-file@1")
+        fqn!(concat!("xyz.taluslabs.storage.walrus.read-file@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

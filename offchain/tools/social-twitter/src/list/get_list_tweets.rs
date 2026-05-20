@@ -97,7 +97,7 @@ impl NexusTool for GetListTweets {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-list-tweets@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-list-tweets@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

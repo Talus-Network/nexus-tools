@@ -202,7 +202,7 @@ impl NexusTool for Http {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.http.generic@1")
+        fqn!(concat!("xyz.taluslabs.http.generic@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

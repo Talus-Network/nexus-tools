@@ -124,7 +124,7 @@ impl NexusTool for GetRecentTweetCount {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-recent-tweet-count@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-recent-tweet-count@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

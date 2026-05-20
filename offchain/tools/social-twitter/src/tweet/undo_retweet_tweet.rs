@@ -60,7 +60,7 @@ impl NexusTool for UndoRetweetTweet {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.undo-retweet-tweet@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.undo-retweet-tweet@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

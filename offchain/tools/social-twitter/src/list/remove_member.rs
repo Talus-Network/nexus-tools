@@ -51,7 +51,7 @@ impl NexusTool for RemoveMember {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.remove-member@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.remove-member@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

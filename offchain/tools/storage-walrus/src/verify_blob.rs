@@ -67,7 +67,7 @@ impl NexusTool for VerifyBlob {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.storage.walrus.verify-blob@1")
+        fqn!(concat!("xyz.taluslabs.storage.walrus.verify-blob@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

@@ -66,7 +66,7 @@ impl NexusTool for CreateGroupDmConversation {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.create-group-conversation@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.create-group-conversation@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

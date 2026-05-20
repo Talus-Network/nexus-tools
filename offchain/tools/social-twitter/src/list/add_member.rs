@@ -51,7 +51,7 @@ impl NexusTool for AddMember {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.add-member@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.add-member@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

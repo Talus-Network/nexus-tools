@@ -166,7 +166,7 @@ impl NexusTool for GetConversationMessagesById {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-conversation-messages-by-id@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-conversation-messages-by-id@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

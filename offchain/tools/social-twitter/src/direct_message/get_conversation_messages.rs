@@ -160,7 +160,7 @@ impl NexusTool for GetConversationMessages {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.get-conversation-messages@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.get-conversation-messages@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {

@@ -63,7 +63,7 @@ impl NexusTool for FollowUser {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.social.twitter.follow-user@1")
+        fqn!(concat!("xyz.taluslabs.social.twitter.follow-user@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {
