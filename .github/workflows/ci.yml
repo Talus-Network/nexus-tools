@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'PR number to publish for (chain ops fire against the PR HEAD)'
+        required: false
+        type: string
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, testnet, mainnet]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  pull-requests: write
+  checks: write
+
+jobs:
+  # ── Resolve target ref for workflow_dispatch with PR# ────────
+  resolve-target:
+    if: github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      head-sha: ${{ steps.r.outputs.head-sha }}
+      base-ref: ${{ steps.r.outputs.base-ref }}
+    steps:
+      - name: Resolve
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=$(gh api "repos/${{ github.repository }}/pulls/${{ inputs.pr-number }}" --jq '.base.ref')
+          HEAD_REF=$(gh api "repos/${{ github.repository }}/pulls/${{ inputs.pr-number }}" --jq '.head.ref')
+          HEAD_SHA=$(gh api "repos/${{ github.repository }}/pulls/${{ inputs.pr-number }}" --jq '.head.sha')
+          echo "base-ref=$BASE" >> "$GITHUB_OUTPUT"
+          echo "ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  # ── Discover tools (always) ──────────────────────────────────
+  discover:
+    uses: ./.github/workflows/offchain-tools.discover.yml
+    with:
+      base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+
+  # ── Build / push ─────────────────────────────────────────────
+  # PR (any base): dry-run on changed matrix.
+  # Push main/testnet/mainnet: push on all matrix.
+  # workflow_dispatch with PR#: push on all matrix.
+  deploy:
+    needs: [discover, resolve-target]
+    if: always() && !cancelled() && needs.discover.result == 'success'
+    uses: ./.github/workflows/offchain-tools.deploy.yml
+    with:
+      target-ref: ${{ needs.resolve-target.outputs.base-ref || github.ref_name }}
+      matrix-json: >-
+        ${{
+          (github.event_name == 'pull_request') && needs.discover.outputs.matrix-changed
+          || needs.discover.outputs.matrix-all
+        }}
+      dry-run: ${{ github.event_name == 'pull_request' }}
+    secrets: inherit
+
+  # ── Prepare (only on push to testnet/mainnet or workflow_dispatch) ──
+  prepare:
+    needs: [discover, deploy, resolve-target]
+    if: >-
+      always() && !cancelled() && needs.deploy.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && (github.ref_name == 'testnet' || github.ref_name == 'mainnet')))
+    uses: ./.github/workflows/offchain-tools.prepare.yml
+    with:
+      target-ref: ${{ needs.resolve-target.outputs.base-ref || github.ref_name }}
+      matrix-json: ${{ needs.discover.outputs.matrix-all }}
+    secrets: inherit
+
+  # ── Register (after prepare) ────────────────────────────────
+  register:
+    needs: [prepare, resolve-target]
+    if: always() && !cancelled() && needs.prepare.result == 'success'
+    uses: ./.github/workflows/offchain-tools.register.yml
+    with:
+      target-ref: ${{ needs.resolve-target.outputs.base-ref || github.ref_name }}
+    secrets: inherit
+
+  # ── Readiness (PRs targeting testnet/mainnet only) ──────────
+  readiness:
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.base_ref == 'testnet' || github.base_ref == 'mainnet') &&
+      fromJson(needs.discover.outputs.matrix-changed).include[0] != null
+    uses: ./.github/workflows/offchain-tools.readiness.yml
+    with:
+      matrix-json: ${{ needs.discover.outputs.matrix-changed }}
+    secrets: inherit
+
+  # ── Retrigger PR after dispatched run (flips readiness green) ──
+  retrigger-pr:
+    needs: [register, resolve-target]
+    if: always() && !cancelled() && needs.register.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/retrigger-pr
+        with:
+          pr-number: ${{ inputs.pr-number }}
+          gpg-signing-key: ${{ secrets.GPG_DEVOPS_SIGNING_KEY }}
+          github-token: ${{ github.token }}
+
+  # ── ci-gate: single required status check for branch protection ──
+  ci-gate:
+    if: always()
+    needs: [discover, deploy, prepare, register, readiness]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        run: |
+          set -euo pipefail
+          declare -A r=(
+            [discover]="${{ needs.discover.result }}"
+            [deploy]="${{ needs.deploy.result }}"
+            [prepare]="${{ needs.prepare.result }}"
+            [register]="${{ needs.register.result }}"
+            [readiness]="${{ needs.readiness.result }}"
+          )
+          for j in "${!r[@]}"; do
+            v="${r[$j]}"
+            case "$v" in
+              success|skipped) echo "✓ $j: $v" ;;
+              *) echo "✗ $j: $v"; FAIL=1 ;;
+            esac
+          done
+          [ -z "${FAIL:-}" ] || exit 1
