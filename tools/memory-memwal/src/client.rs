@@ -41,6 +41,11 @@ use {
 
 /// One-shot guard so the "missing delegate key" warning is emitted at most
 /// once per process even though `from_env` runs once per registered tool.
+///
+/// `Once::call_once` is a blocking primitive — anything inside the closure
+/// blocks every other caller until it returns. The closure must remain
+/// trivially fast (a single `log::warn!` is fine); never add filesystem,
+/// network, or any work that can spuriously stall.
 static WARN_MISSING_KEY: Once = Once::new();
 
 /// Load `<cwd>/.env` into the process environment if it exists.
@@ -182,8 +187,8 @@ pub(crate) const MEMWAL_API_VERSION: &str = "0.1.0";
 ///
 /// Verified via `GET /config` → `{"network": "mainnet", ...}`.
 ///
-/// Reference constant — operators select this via the `MEMWAL_SERVER_URL`
-/// env var or the `server_url` tool input rather than via a Rust code path.
+/// Reference constant — operators select this by setting `MEMWAL_SERVER_URL`
+/// in the deployment environment rather than via a Rust code path.
 #[allow(dead_code)]
 pub(crate) const RELAYER_URL_MAINNET: &str = "https://relayer.memwal.ai";
 
@@ -226,19 +231,6 @@ const POLL_MAX: Duration = Duration::from_secs(4);
 /// it gives up with `MemWalError::Timeout`. Sized for Walrus tail-latency
 /// — erasure-coded shard replication can take 30-60 s under load.
 const POLL_BUDGET: Duration = Duration::from_secs(60);
-
-/// Terminal statuses from the relayer's job-state machine. Anything else
-/// (`pending`, `running`, `uploaded`) is in-progress; anything not in this
-/// set or the in-progress set surfaces as an error rather than looping.
-const STATUS_DONE: &str = "done";
-const STATUS_FAILED: &str = "failed";
-const STATUS_PENDING: &str = "pending";
-const STATUS_RUNNING: &str = "running";
-const STATUS_UPLOADED: &str = "uploaded";
-
-fn is_in_progress(status: &str) -> bool {
-    matches!(status, STATUS_PENDING | STATUS_RUNNING | STATUS_UPLOADED)
-}
 
 /// Exponential backoff with capping. Each call doubles the delay until it
 /// reaches POLL_MAX.
@@ -316,10 +308,33 @@ pub(crate) struct RememberResponse {
     pub(crate) job_id: String,
 }
 
+/// Lifecycle states emitted by the relayer's job-state machine.
+///
+/// `#[serde(other)]` Unknown captures any status string the relayer
+/// introduces later: the polling loops surface Unknown as an error rather
+/// than looping on it indefinitely, so a new pre-pinned-tag status cannot
+/// stall the call.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JobStatus {
+    Pending,
+    Running,
+    Uploaded,
+    Done,
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+impl JobStatus {
+    fn is_in_progress(self) -> bool {
+        matches!(self, JobStatus::Pending | JobStatus::Running | JobStatus::Uploaded)
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct JobStatusResponse {
-    /// "pending" | "running" | "uploaded" | "done" | "failed"
-    pub(crate) status: String,
+    pub(crate) status: JobStatus,
     pub(crate) blob_id: Option<String>,
 }
 
@@ -361,10 +376,6 @@ pub(crate) struct AskResponse {
 #[derive(Deserialize)]
 pub(crate) struct ForgetResponse {
     pub(crate) deleted: u64,
-    /// Server echoes the namespace it interpreted (`"default"` when absent
-    /// from the request). Currently informational only.
-    #[allow(dead_code)]
-    pub(crate) namespace: String,
 }
 
 /// Response from `POST /api/stats` — per-namespace usage summary.
@@ -385,14 +396,8 @@ pub(crate) struct RememberBulkResponse {
 #[derive(Deserialize, Clone)]
 pub(crate) struct BulkStatusItem {
     pub(crate) job_id: String,
-    /// "pending" | "running" | "uploaded" | "done" | "failed"
-    pub(crate) status: String,
+    pub(crate) status: JobStatus,
     pub(crate) blob_id: Option<String>,
-    /// Populated when `status == "failed"`. Exposed so partial-success
-    /// callers (via [`MemWalClient::poll_bulk_status_once`]) can inspect
-    /// the reason — `poll_bulk_jobs` itself only reports the failed job_id.
-    #[allow(dead_code)]
-    pub(crate) error: Option<String>,
 }
 
 /// Response from `POST /api/remember/bulk/status` — one entry per requested job_id.
@@ -407,8 +412,6 @@ pub(crate) struct BulkStatusResponse {
 /// loudly per the maintenance-pin contract on [`MEMWAL_API_VERSION`].
 #[derive(Deserialize)]
 struct HealthResponse {
-    #[allow(dead_code)]
-    status: String,
     version: Option<String>,
 }
 
@@ -709,8 +712,8 @@ impl MemWalClient {
         loop {
             sleep(delay).await;
             let status: JobStatusResponse = self.get(&path).await?.json().await?;
-            match status.status.as_str() {
-                STATUS_DONE => {
+            match status.status {
+                JobStatus::Done => {
                     return status.blob_id.ok_or_else(|| {
                         MemWalError::Server(format!(
                             "job {job_id} reached terminal status `done` but \
@@ -718,13 +721,14 @@ impl MemWalClient {
                         ))
                     });
                 }
-                STATUS_FAILED => return Err(MemWalError::JobFailed(job_id.to_string())),
-                s if is_in_progress(s) => {}
-                other => {
+                JobStatus::Failed => return Err(MemWalError::JobFailed(job_id.to_string())),
+                s if s.is_in_progress() => {}
+                JobStatus::Unknown => {
                     return Err(MemWalError::Server(format!(
-                        "job {job_id} returned unrecognized status `{other}`"
+                        "job {job_id} returned an unrecognized status"
                     )));
                 }
+                _ => unreachable!("is_in_progress covers Pending/Running/Uploaded"),
             }
             if Instant::now() >= deadline {
                 return Err(MemWalError::Timeout(job_id.to_string()));
@@ -932,16 +936,17 @@ impl MemWalClient {
                         "bulk status response missing job {id}"
                     )));
                 };
-                match item.status.as_str() {
-                    STATUS_DONE | STATUS_FAILED => {
+                match item.status {
+                    JobStatus::Done | JobStatus::Failed => {
                         terminal.insert(id.clone(), (*item).clone());
                     }
-                    s if is_in_progress(s) => {}
-                    other => {
+                    s if s.is_in_progress() => {}
+                    JobStatus::Unknown => {
                         return Err(MemWalError::Server(format!(
-                            "job {id} returned unrecognized status `{other}`"
+                            "job {id} returned an unrecognized status"
                         )));
                     }
+                    _ => unreachable!("is_in_progress covers Pending/Running/Uploaded"),
                 }
             }
 
@@ -959,17 +964,15 @@ impl MemWalClient {
             .iter()
             .map(|id| {
                 let item = terminal.get(id).expect("loop only exits when terminal covers job_ids");
-                match item.status.as_str() {
-                    STATUS_DONE => item.blob_id.clone().ok_or_else(|| {
+                match item.status {
+                    JobStatus::Done => item.blob_id.clone().ok_or_else(|| {
                         MemWalError::Server(format!(
                             "job {id} reached terminal status `done` but \
                              blob_id is missing"
                         ))
                     }),
-                    STATUS_FAILED => Err(MemWalError::JobFailed(id.clone())),
-                    other => Err(MemWalError::Server(format!(
-                        "job {id} terminal cache holds non-terminal status `{other}`"
-                    ))),
+                    JobStatus::Failed => Err(MemWalError::JobFailed(id.clone())),
+                    _ => unreachable!("terminal cache only stores Done/Failed"),
                 }
             })
             .collect()

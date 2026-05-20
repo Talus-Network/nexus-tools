@@ -47,7 +47,7 @@ BIND_ADDR=0.0.0.0:9000 cargo run --package memory-memwal
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `MEMWAL_DELEGATE_PRIVATE_KEY` | **yes** | — | Hex-encoded 32-byte Ed25519 (Elliptic Curve Digital Signature Algorithm) delegate private key |
-| `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). When set, sent as `x-account-id` and embedded in the signed canonical message — matches the JS SDK 1:1 and skips the relayer's slow on-chain registry scan. |
+| `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). When non-empty, sent as `x-account-id` and embedded in the signed canonical message — matches the JS SDK 1:1 and skips the relayer's slow on-chain registry scan. An explicitly-empty value is treated the same as unset. |
 | `MEMWAL_SERVER_URL` | no | `https://relayer.staging.memwal.ai` (testnet) | MemWal relayer base URL. Set to `https://relayer.memwal.ai` for mainnet. |
 
 Set `MEMWAL_ALLOW_INSECURE=1` to accept `http://` relayer URLs (local

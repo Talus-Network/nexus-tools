@@ -134,7 +134,15 @@ server-start bind=host:
     echo "$pid" > "$pid_file"
     # The bind probe address may differ from {{bind}} (e.g. 0.0.0.0 is not
     # routable from a client); always probe via {{host}}.
+    # If the binary exits before answering (e.g. FATAL on malformed
+    # MEMWAL_DELEGATE_PRIVATE_KEY), break early and dump the log.
     for i in $(seq 1 30); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "FAIL: server PID $pid exited during startup. Last log lines:" >&2
+            tail -n 30 "$log_file" >&2 || true
+            rm -f "$pid_file"
+            exit 1
+        fi
         if curl -sSf "http://{{host}}/tools" > /dev/null 2>&1; then
             echo "Ready at http://{{host}}  (bind={{bind}}, PID $pid, log $log_file)"
             exit 0
@@ -142,7 +150,8 @@ server-start bind=host:
         sleep 1
     done
     echo "FAIL: server did not answer on http://{{host}}/tools within 30s." >&2
-    echo "Tail the log:  just memwal server-logs" >&2
+    echo "Last log lines:" >&2
+    tail -n 30 "$log_file" >&2 || true
     exit 1
 
 # Read `target/memwal-server.pid`, send SIGTERM, wait up to 5 s, then
