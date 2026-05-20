@@ -10,7 +10,7 @@
 //! efficiency gain in rate-limit budget when batching is feasible.
 
 use {
-    crate::client::MemWalClient,
+    crate::client::{MemWalClient, MAX_BULK_ITEMS},
     nexus_sdk::{fqn, ToolFqn},
     nexus_toolkit::*,
     schemars::JsonSchema,
@@ -84,6 +84,23 @@ impl NexusTool for RememberBulkMemories {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
+        // Validate batch size before signing anything — empty arrays waste a
+        // signed request slot; oversized batches surface as opaque HTTP 400
+        // from the relayer without this guard.
+        if input.items.is_empty() {
+            return Output::Err {
+                reason: "bulk batch must contain at least 1 item".into(),
+            };
+        }
+        if input.items.len() > MAX_BULK_ITEMS {
+            return Output::Err {
+                reason: format!(
+                    "bulk batch capped at {MAX_BULK_ITEMS} items, got {}",
+                    input.items.len()
+                ),
+            };
+        }
+
         // Map our owned `Vec<BulkItem>` into the borrowed `(&str, Option<&str>)`
         // tuple shape the client expects. This avoids `Item<'_>` lifetime
         // gymnastics by keeping the inputs alive in `items_refs`.
@@ -224,6 +241,47 @@ mod tests {
             matches!(output, Output::Err { .. }),
             "any failed job must produce Err"
         );
+    }
+
+    /// `invoke` returns `Err` for an empty `items` array without hitting the network.
+    /// Failure mode caught: an empty batch silently round-trips, burning a
+    /// signed request slot and a rate-limit point for an opaque 400.
+    #[tokio::test]
+    async fn invoke_returns_err_on_empty_items() {
+        let server = Server::new_async().await;
+        let tool = make_tool(&server.url());
+        let output = tool.invoke(bulk_input(&[])).await;
+        match output {
+            Output::Err { reason } => {
+                assert!(
+                    reason.contains("1 item"),
+                    "reason must mention the lower bound; got: {reason}"
+                );
+            }
+            Output::Ok { .. } => panic!("empty batch must produce Err"),
+        }
+    }
+
+    /// `invoke` returns `Err` for a batch of MAX_BULK_ITEMS+1 items without
+    /// contacting the relayer.
+    /// Failure mode caught: oversized batch reaches the relayer and gets an
+    /// opaque HTTP 400 instead of a tool-side cap explanation.
+    #[tokio::test]
+    async fn invoke_returns_err_on_oversized_batch() {
+        let server = Server::new_async().await;
+        let tool = make_tool(&server.url());
+        let texts: Vec<String> = (0..MAX_BULK_ITEMS + 1).map(|i| format!("item-{i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let output = tool.invoke(bulk_input(&refs)).await;
+        match output {
+            Output::Err { reason } => {
+                assert!(
+                    reason.contains(&MAX_BULK_ITEMS.to_string()),
+                    "reason must mention the cap; got: {reason}"
+                );
+            }
+            Output::Ok { .. } => panic!("oversized batch must produce Err"),
+        }
     }
 
     /// `invoke` returns `Err` when the initial bulk POST fails (4xx/5xx).

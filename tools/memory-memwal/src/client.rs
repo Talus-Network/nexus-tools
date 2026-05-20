@@ -246,6 +246,67 @@ fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(POLL_MAX)
 }
 
+fn check_text_len(field: &str, value: &str) -> Result<(), MemWalError> {
+    if value.len() > MAX_TEXT_BYTES {
+        return Err(MemWalError::Config(format!(
+            "{field} exceeds maximum allowed size of {MAX_TEXT_BYTES} bytes (got {})",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Server-side per-batch cap. Mirrors the relayer's `MAX_BULK_ITEMS = 20`
+/// in `services/server/src/routes.rs` at the pinned tag — kept in sync so
+/// the tool's error message matches the relayer's behavior. Validated at
+/// the tool boundary so a 21-item batch surfaces as a clean tool-level
+/// reason rather than an opaque HTTP 400.
+pub(crate) const MAX_BULK_ITEMS: usize = 20;
+
+/// Upper bound on each tool's primary text input. Sized to comfortably hold
+/// a long document while keeping signature material and outbound bandwidth
+/// reasonable. The relayer enforces its own size limits server-side; this
+/// is a defensive cap at the tool boundary so oversized inputs fail
+/// immediately instead of consuming a signed request slot and a rate-limit
+/// point.
+pub(crate) const MAX_TEXT_BYTES: usize = 1 << 20; // 1 MiB
+
+/// Translate a non-2xx response into a `MemWalError`, distinguishing rate
+/// limits (so callers can back off intelligently) from generic upstream
+/// failures (where the full body is logged structurally but only a terse
+/// status family is surfaced to the unauthenticated /invoke caller).
+async fn map_error_response(resp: reqwest::Response) -> MemWalError {
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        let retry_after_secs = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let body = resp.text().await.unwrap_or_default();
+        log::warn!(
+            target: "memwal::upstream",
+            "HTTP 429 (retry-after={retry_after_secs:?}): {}",
+            body.chars().take(256).collect::<String>()
+        );
+        return MemWalError::RateLimited { retry_after_secs };
+    }
+    let body = resp.text().await.unwrap_or_default();
+    log::warn!(
+        target: "memwal::upstream",
+        "HTTP {}: {}",
+        status,
+        body.chars().take(256).collect::<String>()
+    );
+    let terse = match status.as_u16() {
+        401 | 403 => "upstream auth failure".to_string(),
+        408 | 504 => "upstream timeout".to_string(),
+        s if (400..500).contains(&s) => format!("upstream rejected the request (HTTP {s})"),
+        s => format!("upstream unavailable (HTTP {s})"),
+    };
+    MemWalError::Server(terse)
+}
+
 // ---------------------------------------------------------------------------
 // API response shapes
 // ---------------------------------------------------------------------------
@@ -571,9 +632,7 @@ impl MemWalClient {
         let resp = req.body(body_bytes).send().await?;
 
         if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(MemWalError::Server(format!("HTTP {status}: {body}")));
+            return Err(map_error_response(resp).await);
         }
 
         Ok(resp)
@@ -596,9 +655,7 @@ impl MemWalClient {
         let resp = req.send().await?;
 
         if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(MemWalError::Server(format!("HTTP {status}: {body}")));
+            return Err(map_error_response(resp).await);
         }
 
         Ok(resp)
@@ -614,6 +671,7 @@ impl MemWalClient {
         text: &str,
         namespace: Option<&str>,
     ) -> Result<String, MemWalError> {
+        check_text_len("text", text)?;
         #[derive(Serialize)]
         struct Req<'a> {
             text: &'a str,
@@ -682,6 +740,7 @@ impl MemWalClient {
         limit: Option<u32>,
         namespace: Option<&str>,
     ) -> Result<Vec<MemoryResult>, MemWalError> {
+        check_text_len("query", query)?;
         #[derive(Serialize)]
         struct Req<'a> {
             query: &'a str,
@@ -712,6 +771,7 @@ impl MemWalClient {
         namespace: Option<&str>,
         limit: Option<u32>,
     ) -> Result<AskResponse, MemWalError> {
+        check_text_len("question", question)?;
         #[derive(Serialize)]
         struct Req<'a> {
             question: &'a str,
@@ -743,6 +803,7 @@ impl MemWalClient {
         text: &str,
         namespace: Option<&str>,
     ) -> Result<usize, MemWalError> {
+        check_text_len("text", text)?;
         #[derive(Serialize)]
         struct Req<'a> {
             text: &'a str,
@@ -792,10 +853,17 @@ impl MemWalClient {
     /// 202-Accepted call. Returns one job_id per item, in the order submitted.
     /// Each job still needs polling — use [`poll_bulk_jobs`] for the batched
     /// status endpoint instead of N separate [`poll_job`] calls.
+    ///
+    /// Callers should enforce the `1..=MAX_BULK_ITEMS` cap before calling so
+    /// oversized batches fail at the tool boundary instead of round-tripping
+    /// to the relayer for an opaque HTTP 400.
     pub(crate) async fn remember_bulk(
         &self,
         items: &[(&str, Option<&str>)],
     ) -> Result<Vec<String>, MemWalError> {
+        for (text, _) in items {
+            check_text_len("text", text)?;
+        }
         #[derive(Serialize)]
         struct Item<'a> {
             text: &'a str,
@@ -1136,6 +1204,73 @@ mod tests {
             err.to_string().contains("version"),
             "error must mention version; got: {err}"
         );
+    }
+
+    /// A 429 from the relayer surfaces as `MemWalError::RateLimited` with
+    /// the parsed `Retry-After` seconds, not the generic `Server` variant.
+    /// Failure mode caught: rate-limit responses look identical to other
+    /// upstream failures, so a DAG retry policy cannot distinguish "back
+    /// off" from "try a different relayer".
+    #[tokio::test]
+    async fn post_translates_429_to_rate_limited() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/forget")
+            .with_status(429)
+            .with_header("retry-after", "42")
+            .with_body("rate limited")
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        let err = client.forget(None).await.expect_err("429 must Err");
+        match err {
+            MemWalError::RateLimited { retry_after_secs } => {
+                assert_eq!(retry_after_secs, Some(42));
+            }
+            other => panic!("expected RateLimited, got {other}"),
+        }
+    }
+
+    /// A 429 with no `Retry-After` header surfaces with `None` rather than
+    /// failing to parse.
+    /// Failure mode caught: a missing header is treated as a malformed
+    /// response and the call becomes Server(...) instead of RateLimited.
+    #[tokio::test]
+    async fn post_translates_429_without_retry_after() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/forget")
+            .with_status(429)
+            .with_body("rate limited")
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        let err = client.forget(None).await.expect_err("429 must Err");
+        assert!(matches!(
+            err,
+            MemWalError::RateLimited { retry_after_secs: None }
+        ));
+    }
+
+    /// A 500 from the relayer surfaces with a terse client-facing reason —
+    /// the upstream body is logged but NOT inlined into the error string.
+    /// Failure mode caught: a relayer that leaks account internals or
+    /// moderation messages in its 500 body would forward that text verbatim
+    /// to the unauthenticated /invoke caller.
+    #[tokio::test]
+    async fn post_terse_message_on_5xx() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/forget")
+            .with_status(500)
+            .with_body("secret internal payload that should not leak")
+            .create_async()
+            .await;
+        let client = make_client(&server.url());
+        let err = client.forget(None).await.expect_err("500 must Err");
+        let msg = err.to_string();
+        assert!(!msg.contains("secret internal payload"));
+        assert!(msg.contains("upstream"));
     }
 
     /// `health_check` returns `Err` when the body is not JSON at all.

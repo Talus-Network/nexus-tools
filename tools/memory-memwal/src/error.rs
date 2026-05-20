@@ -21,6 +21,9 @@ pub(crate) enum MemWalError {
 
     #[error("Configuration error: {0}")]
     Config(String),
+
+    #[error("rate-limited by relayer (retry after {retry_after_secs:?}s)")]
+    RateLimited { retry_after_secs: Option<u64> },
 }
 
 #[derive(Debug, Error)]
