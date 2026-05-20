@@ -1,5 +1,9 @@
 import '../offchain/helpers/helpers.just'
 
+# Cargo lives under offchain/; default all recipes there. Recipes that
+# need a different PWD (md-lint, typos, shebang checks) `cd` explicitly.
+set working-directory := '../offchain'
+
 [private]
 _default:
     @just --list pre-commit
@@ -7,7 +11,7 @@ _default:
 
 # cargo check --locked --workspace --bins --examples
 cargo-check: _check-cargo
-    cd ../offchain && cargo check --locked --workspace --bins --examples
+    cargo check --locked --workspace --bins --examples
 
 
 # cargo +nightly fmt --all --check
@@ -18,7 +22,7 @@ cargo-nightly-fmt: _check-cargo
 
     nightly="$(just helpers::get-nightly-version)"
 
-    cd ../offchain && cargo +"$nightly" fmt --all --check || {
+    cargo +"$nightly" fmt --all --check || {
         echo "❌ Formatting failed. Please run 'cargo +$nightly fmt --all' to format the code." >&2
         exit 1
     }
@@ -75,18 +79,18 @@ check-container-runtime:
 
 # cargo clippy --all-targets --all-features
 cargo-clippy: _check-cargo
-    cd ../offchain && cargo clippy --locked --all-targets --all-features
+    cargo clippy --locked --all-targets --all-features
 
 
 # TODO: Perhaps consider this stricter version in the future.
 # cargo clippy --all-targets --all-features -- -D warnings
 cargo-clippy-strict: _check-cargo
-    cd ../offchain && cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo clippy --locked --all-targets --all-features -- -D warnings
 
 
 # cargo nextest run --locked --no-run --workspace --all-features --bins --examples --tests
 cargo-nextest-build: _check-cargo-nextest
-    cd ../offchain && cargo nextest run --locked --no-run --workspace --all-features --bins --examples --tests
+    cargo nextest run --locked --no-run --workspace --all-features --bins --examples --tests
 
 
 # Note: The idea for `--fail-fast` is that the change we are commiting is the one responsible for
@@ -94,7 +98,7 @@ cargo-nextest-build: _check-cargo-nextest
 # cargo nextest run --locked --fail-fast --workspace --all-features --bins --examples --tests
 cargo-nextest-run: _check-cargo-nextest
     # Note that tests require docker to be running.
-    cd ../offchain && cargo nextest run --locked --fail-fast --workspace --all-features --bins --examples --tests
+    cargo nextest run --locked --fail-fast --workspace --all-features --bins --examples --tests
 
 
 # markdownlint-cli2 '**/*.md' '!.git/' --config .markdownlint.json
