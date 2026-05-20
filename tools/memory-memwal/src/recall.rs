@@ -18,14 +18,9 @@ pub(crate) struct Input {
     /// Natural-language query to search for relevant memories.
     query: String,
     /// Maximum number of results to return.
-    #[serde(default)]
     limit: Option<u32>,
     /// Namespace to search within. Searches the default namespace when omitted.
-    #[serde(default)]
     namespace: Option<String>,
-    /// Override the relayer URL for this invocation.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 /// A single memory returned by a recall query.
@@ -37,21 +32,14 @@ pub(crate) struct RecalledMemory {
     pub(crate) blob_id: String,
     /// Cosine distance from the query vector — lower means more relevant.
     pub(crate) distance: f64,
-    /// Namespace the memory belongs to (same as the query namespace).
-    ///
-    /// The relayer does not echo the namespace per result; this field is
-    /// populated from the recall request's `namespace` input (defaulting to
-    /// `"default"` when omitted), which is always the namespace searched.
-    pub(crate) namespace: String,
 }
 
-impl RecalledMemory {
-    fn from_result(r: MemoryResult, namespace: &str) -> Self {
+impl From<MemoryResult> for RecalledMemory {
+    fn from(r: MemoryResult) -> Self {
         Self {
             text: r.text,
             blob_id: r.blob_id,
             distance: r.distance,
-            namespace: namespace.to_string(),
         }
     }
 }
@@ -60,18 +48,20 @@ impl RecalledMemory {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
     /// Memories ranked by relevance. May be empty if nothing matched.
+    ///
+    /// The `namespace` field is the namespace that was searched, hoisted
+    /// to the variant since every result in a single recall belongs to
+    /// the same namespace (the relayer does not currently support
+    /// cross-namespace recall).
     Ok {
         results: Vec<RecalledMemory>,
+        namespace: String,
     },
-    Err {
-        reason: String,
-    },
+    Err { reason: String },
 }
 
 pub(crate) struct RecallMemories {
-    default_api_base: String,
-    private_key_hex: String,
-    account_id: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for RecallMemories {
@@ -79,12 +69,11 @@ impl NexusTool for RecallMemories {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -100,13 +89,8 @@ impl NexusTool for RecallMemories {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -114,28 +98,20 @@ impl NexusTool for RecallMemories {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
-        // Resolve the effective namespace so we can populate it on each result
-        // (the relayer does not echo it per-item in the response).
         let ns = input
             .namespace
             .as_deref()
             .unwrap_or("default")
             .to_string();
 
-        match client
+        match self
+            .client
             .recall(&input.query, input.limit, input.namespace.as_deref())
             .await
         {
             Ok(results) => Output::Ok {
-                results: results
-                    .into_iter()
-                    .map(|r| RecalledMemory::from_result(r, &ns))
-                    .collect(),
+                results: results.into_iter().map(RecalledMemory::from).collect(),
+                namespace: ns,
             },
             Err(e) => Output::Err {
                 reason: e.to_string(),
@@ -150,18 +126,7 @@ mod tests {
 
     fn make_tool(server_url: &str) -> RecallMemories {
         RecallMemories {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
-        }
-    }
-
-    fn recall_input(server: &mockito::ServerGuard, query: &str) -> Input {
-        Input {
-            query: query.to_string(),
-            limit: None,
-            namespace: None,
-            server_url: Some(server.url()),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
@@ -182,8 +147,7 @@ mod tests {
                         {
                             "text": "Paris is the capital of France",
                             "blob_id": "blob-1",
-                            "distance": 0.12,
-                            "namespace": "default"
+                            "distance": 0.12
                         }
                     ]
                 })
@@ -193,14 +157,19 @@ mod tests {
             .await;
 
         let output = tool
-            .invoke(recall_input(&server, "capital of France"))
+            .invoke(Input {
+                query: "capital of France".into(),
+                limit: None,
+                namespace: None,
+            })
             .await;
         match output {
-            Output::Ok { results } => {
+            Output::Ok { results, namespace } => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].text, "Paris is the capital of France");
                 assert_eq!(results[0].blob_id, "blob-1");
                 assert!((results[0].distance - 0.12).abs() < f64::EPSILON);
+                assert_eq!(namespace, "default");
             }
             Output::Err { reason } => panic!("unexpected Err: {reason}"),
         }
@@ -222,10 +191,14 @@ mod tests {
             .await;
 
         let output = tool
-            .invoke(recall_input(&server, "something obscure"))
+            .invoke(Input {
+                query: "something obscure".into(),
+                limit: None,
+                namespace: None,
+            })
             .await;
         assert!(
-            matches!(output, Output::Ok { results } if results.is_empty()),
+            matches!(output, Output::Ok { results, .. } if results.is_empty()),
             "empty results must produce Ok with empty vec"
         );
     }
@@ -244,7 +217,13 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(recall_input(&server, "anything")).await;
+        let output = tool
+            .invoke(Input {
+                query: "anything".into(),
+                limit: None,
+                namespace: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Err { .. }),
             "server 500 must produce Err variant"

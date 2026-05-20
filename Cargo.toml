@@ -38,8 +38,10 @@ strum = "0.28.0"
 strum_macros = "0.28.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
+url = "2.5.8"
 uuid = { version = "1.23.1", features = ["v4"] }
 warp = "0.4.3"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # === Nexus deps ===
 [workspace.dependencies.nexus-sdk]

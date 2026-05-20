@@ -24,11 +24,7 @@ pub(crate) struct Input {
     text: String,
     /// Namespace to store the extracted facts in. Uses the default namespace
     /// when omitted.
-    #[serde(default)]
     namespace: Option<String>,
-    /// Override the relayer URL for this invocation.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -36,18 +32,12 @@ pub(crate) struct Input {
 pub(crate) enum Output {
     /// Facts were submitted for storage. `job_count` is the number of
     /// individual memory-write jobs enqueued on the server.
-    Ok {
-        job_count: u32,
-    },
-    Err {
-        reason: String,
-    },
+    Ok { job_count: u32 },
+    Err { reason: String },
 }
 
 pub(crate) struct AnalyzeAndRemember {
-    default_api_base: String,
-    private_key_hex: String,
-    account_id: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for AnalyzeAndRemember {
@@ -55,12 +45,11 @@ impl NexusTool for AnalyzeAndRemember {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -76,13 +65,8 @@ impl NexusTool for AnalyzeAndRemember {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -90,12 +74,8 @@ impl NexusTool for AnalyzeAndRemember {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
-        match client
+        match self
+            .client
             .analyze(&input.text, input.namespace.as_deref())
             .await
         {
@@ -115,17 +95,7 @@ mod tests {
 
     fn make_tool(server_url: &str) -> AnalyzeAndRemember {
         AnalyzeAndRemember {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
-        }
-    }
-
-    fn analyze_input(server: &mockito::ServerGuard, text: &str) -> Input {
-        Input {
-            text: text.to_string(),
-            namespace: None,
-            server_url: Some(server.url()),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
@@ -146,10 +116,10 @@ mod tests {
             .await;
 
         let output = tool
-            .invoke(analyze_input(
-                &server,
-                "Alice lives in Paris. Bob works at ACME. Paris is in France.",
-            ))
+            .invoke(Input {
+                text: "Alice lives in Paris. Bob works at ACME. Paris is in France.".into(),
+                namespace: None,
+            })
             .await;
 
         assert!(
@@ -174,7 +144,12 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(analyze_input(&server, "...")).await;
+        let output = tool
+            .invoke(Input {
+                text: "...".into(),
+                namespace: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Ok { job_count: 0 }),
             "empty job_ids must produce Ok{{job_count: 0}}"
@@ -195,7 +170,12 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(analyze_input(&server, "any text")).await;
+        let output = tool
+            .invoke(Input {
+                text: "any text".into(),
+                namespace: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Err { .. }),
             "server 500 must produce Err variant"

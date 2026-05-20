@@ -19,14 +19,9 @@ pub(crate) struct Input {
     /// The question to answer using stored memories as context.
     question: String,
     /// Namespace to retrieve memories from. Uses the default namespace when omitted.
-    #[serde(default)]
     namespace: Option<String>,
     /// Maximum number of source memories to inject as context.
-    #[serde(default)]
     limit: Option<u32>,
-    /// Override the relayer URL for this invocation.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 /// A memory that contributed to the answer.
@@ -58,15 +53,11 @@ pub(crate) enum Output {
         answer: String,
         sources: Vec<AnswerSource>,
     },
-    Err {
-        reason: String,
-    },
+    Err { reason: String },
 }
 
 pub(crate) struct AskMemory {
-    default_api_base: String,
-    private_key_hex: String,
-    account_id: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for AskMemory {
@@ -74,12 +65,11 @@ impl NexusTool for AskMemory {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -95,13 +85,8 @@ impl NexusTool for AskMemory {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -109,12 +94,8 @@ impl NexusTool for AskMemory {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
-        match client
+        match self
+            .client
             .ask(&input.question, input.namespace.as_deref(), input.limit)
             .await
         {
@@ -135,18 +116,7 @@ mod tests {
 
     fn make_tool(server_url: &str) -> AskMemory {
         AskMemory {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
-        }
-    }
-
-    fn ask_input(server: &mockito::ServerGuard, question: &str) -> Input {
-        Input {
-            question: question.to_string(),
-            namespace: None,
-            limit: None,
-            server_url: Some(server.url()),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
@@ -179,7 +149,11 @@ mod tests {
             .await;
 
         let output = tool
-            .invoke(ask_input(&server, "What is the capital of France?"))
+            .invoke(Input {
+                question: "What is the capital of France?".into(),
+                namespace: None,
+                limit: None,
+            })
             .await;
         match output {
             Output::Ok { answer, sources } => {
@@ -209,7 +183,13 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(ask_input(&server, "unknown topic")).await;
+        let output = tool
+            .invoke(Input {
+                question: "unknown topic".into(),
+                namespace: None,
+                limit: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Ok { sources, .. } if sources.is_empty()),
             "empty sources must produce Ok with empty vec"
@@ -230,7 +210,13 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(ask_input(&server, "anything")).await;
+        let output = tool
+            .invoke(Input {
+                question: "anything".into(),
+                namespace: None,
+                limit: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Err { .. }),
             "server 503 must produce Err variant"

@@ -4,12 +4,6 @@
 //! MemWal. The call blocks until the memory is durably stored on Walrus and
 //! returns the resulting blob ID, making it safe to chain in a Nexus DAG —
 //! the next vertex will not activate until the write is confirmed.
-//!
-//! ## Configuration
-//!
-//! The Ed25519 delegate private key is read from `MEMWAL_DELEGATE_PRIVATE_KEY`
-//! (hex-encoded, 32 bytes). The relayer URL follows the three-level resolution
-//! described in `client.rs`.
 
 use {
     crate::client::MemWalClient,
@@ -26,32 +20,19 @@ pub(crate) struct Input {
     text: String,
     /// Namespace used to scope this memory. Defaults to `"default"` on the
     /// server when omitted.
-    #[serde(default)]
     namespace: Option<String>,
-    /// Override the relayer URL for this invocation. Falls back to
-    /// `MEMWAL_SERVER_URL` env var, then `https://relayer.memwal.ai`.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
     /// Memory was durably stored. `blob_id` is its Walrus blob identifier.
-    Ok {
-        blob_id: String,
-    },
-    Err {
-        reason: String,
-    },
+    Ok { blob_id: String },
+    Err { reason: String },
 }
 
 pub(crate) struct RememberMemory {
-    /// Relayer URL resolved from env at startup; can be overridden per-call.
-    default_api_base: String,
-    account_id: String,
-    /// Hex-encoded Ed25519 delegate private key.
-    private_key_hex: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for RememberMemory {
@@ -59,12 +40,11 @@ impl NexusTool for RememberMemory {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -80,14 +60,8 @@ impl NexusTool for RememberMemory {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        // Key must be present and valid before any call can succeed.
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -95,12 +69,8 @@ impl NexusTool for RememberMemory {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
-        let job_id = match client
+        let job_id = match self
+            .client
             .remember(&input.text, input.namespace.as_deref())
             .await
         {
@@ -112,7 +82,7 @@ impl NexusTool for RememberMemory {
             }
         };
 
-        match client.poll_job(&job_id).await {
+        match self.client.poll_job(&job_id).await {
             Ok(blob_id) => Output::Ok { blob_id },
             Err(e) => Output::Err {
                 reason: e.to_string(),
@@ -131,17 +101,7 @@ mod tests {
 
     fn make_tool(server_url: &str) -> RememberMemory {
         RememberMemory {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
-        }
-    }
-
-    fn remember_input(server: &mockito::ServerGuard, text: &str) -> Input {
-        Input {
-            text: text.to_string(),
-            namespace: None,
-            server_url: Some(server.url()),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
@@ -171,7 +131,12 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(remember_input(&server, "hello world")).await;
+        let output = tool
+            .invoke(Input {
+                text: "hello world".into(),
+                namespace: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Ok { blob_id } if blob_id == "blob-xyz"),
             "expected Ok{{blob_id: blob-xyz}}"
@@ -201,7 +166,12 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(remember_input(&server, "will fail")).await;
+        let output = tool
+            .invoke(Input {
+                text: "will fail".into(),
+                namespace: None,
+            })
+            .await;
         assert!(
             matches!(output, Output::Err { .. }),
             "failed job must produce Err variant"
@@ -223,7 +193,10 @@ mod tests {
             .await;
 
         let output = tool
-            .invoke(remember_input(&server, "text that will not be stored"))
+            .invoke(Input {
+                text: "text that will not be stored".into(),
+                namespace: None,
+            })
             .await;
         assert!(
             matches!(output, Output::Err { .. }),
@@ -255,7 +228,12 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(remember_input(&server, "exact text")).await;
+        let output = tool
+            .invoke(Input {
+                text: "exact text".into(),
+                namespace: None,
+            })
+            .await;
         assert!(matches!(output, Output::Ok { .. }));
     }
 }

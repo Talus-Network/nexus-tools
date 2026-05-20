@@ -18,6 +18,9 @@ pub(crate) enum MemWalError {
 
     #[error("Timed out waiting for job {0} to complete")]
     Timeout(String),
+
+    #[error("Configuration error: {0}")]
+    Config(String),
 }
 
 #[derive(Debug, Error)]

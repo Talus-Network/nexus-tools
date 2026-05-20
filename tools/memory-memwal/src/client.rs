@@ -25,12 +25,17 @@
 
 use {
     crate::{
-        auth::sign_request,
+        auth::{parse_signing_key, sign_request},
         error::{AuthError, MemWalError},
     },
+    ed25519_dalek::SigningKey,
     serde::{Deserialize, Serialize},
-    std::{sync::Once, time::Duration},
+    std::{
+        sync::{Arc, Once, OnceLock},
+        time::Duration,
+    },
     tokio::time::sleep,
+    url::Url,
 };
 
 /// One-shot guard so the "missing delegate key" warning is emitted at most
@@ -312,51 +317,193 @@ pub(crate) struct BulkStatusResponse {
 // Client
 // ---------------------------------------------------------------------------
 
+/// Process-wide HTTP client, shared across every `MemWalClient` so the
+/// connection pool, TLS session cache, and HTTP/2 multiplexing survive
+/// across Nexus `invoke` calls.
+///
+/// `reqwest::Client` wraps an `Arc<ClientRef>` internally, so cloning is a
+/// cheap Arc bump. The builder options below are conservative defaults — a
+/// hung relayer terminates the per-request future after 30 s instead of
+/// parking the calling task indefinitely.
+static SHARED_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn shared_http() -> reqwest::Client {
+    SHARED_HTTP
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(8)
+                .tcp_keepalive(Duration::from_secs(30))
+                .build()
+                .expect("reqwest client builder must succeed with these options")
+        })
+        .clone()
+}
+
+/// True when the operator has explicitly opted in to non-HTTPS relayer URLs
+/// for local development. Production deploys must leave this unset.
+fn allow_insecure() -> bool {
+    std::env::var("MEMWAL_ALLOW_INSECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Parse a candidate relayer base URL.
+///
+/// - Requires `https://` unless `MEMWAL_ALLOW_INSECURE=1` is set, in which
+///   case `http://` is accepted. This is a policy applied at the application
+///   boundary; the underlying `reqwest::Client` itself is not
+///   `.https_only(true)` so test mocks can use loopback HTTP.
+/// - Rejects paths, queries, and fragments in the base — `Url::join` would
+///   otherwise concatenate them with the per-call path and silently rewrite
+///   the signed message's path segment.
+fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
+    let url = Url::parse(raw)
+        .map_err(|e| MemWalError::Config(format!("invalid relayer URL `{raw}`: {e}")))?;
+    let scheme = url.scheme();
+    let scheme_ok = scheme == "https" || (allow_insecure() && scheme == "http");
+    if !scheme_ok {
+        return Err(MemWalError::Config(format!(
+            "relayer URL must use https (got scheme `{scheme}`)"
+        )));
+    }
+    let path = url.path();
+    if !path.is_empty() && path != "/" {
+        return Err(MemWalError::Config(format!(
+            "relayer URL must not carry a path (got `{path}`)"
+        )));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(MemWalError::Config(
+            "relayer URL must not carry a query or fragment".into(),
+        ));
+    }
+    Ok(url)
+}
+
+/// Per-tool HTTP client. All non-trivial state is behind `Arc`/`reqwest::Client`
+/// so cloning is cheap — every `NexusTool` holds one and reuses it across
+/// every `invoke`. The signing key is parsed at construction so the per-call
+/// path never re-decodes hex or rebuilds the public key.
+#[derive(Clone)]
 pub(crate) struct MemWalClient {
-    pub(crate) api_base: String,
-    pub(crate) private_key_hex: String,
+    http: reqwest::Client,
+    api_base: Url,
+    /// `Some` once the delegate key parsed successfully. `None` when the
+    /// env var was missing or malformed at construction; signed calls then
+    /// return `AuthError::MissingKey` so the failure mode is a clean 4xx
+    /// at the tool boundary rather than a process exit.
+    signing: Option<Arc<SigningMaterial>>,
     /// MemWal account object ID. Empty string when not configured — the
     /// relayer then resolves the account from the public key via on-chain
     /// scan. Signed into the canonical message; sent as `x-account-id`
     /// header only when non-empty (mirrors the JS SDK).
-    pub(crate) account_id: String,
-    http: reqwest::Client,
+    account_id: Arc<str>,
+}
+
+struct SigningMaterial {
+    signing_key: SigningKey,
+    public_key_hex: String,
 }
 
 impl MemWalClient {
-    pub(crate) fn new(api_base: String, private_key_hex: String, account_id: String) -> Self {
-        Self {
+    /// Build a `MemWalClient` from environment variables. This is the
+    /// production constructor.
+    ///
+    /// `MEMWAL_SERVER_URL` overrides the relayer URL; missing or empty
+    /// values fall back to `DEFAULT_SERVER_URL`. The URL is validated
+    /// (https-only unless `MEMWAL_ALLOW_INSECURE=1`) and parse failure
+    /// returns `MemWalError::Config` rather than panicking.
+    ///
+    /// Delegates key handling to [`read_validated_private_key`]: a missing
+    /// key produces a one-shot warning and the client boots with no
+    /// signing material; a malformed key logs an error and behaves the
+    /// same way. Startup-time validation in `main` is the right place to
+    /// fail-fast on persistent misconfiguration.
+    pub(crate) fn from_env() -> Result<Self, MemWalError> {
+        let api_base_raw = std::env::var(ENV_SERVER_URL)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+        let api_base = parse_relayer_url(&api_base_raw)?;
+
+        let signing = match read_validated_private_key() {
+            Ok(Some(hex)) => match parse_signing_key(&hex) {
+                Ok((signing_key, public_key_hex)) => Some(Arc::new(SigningMaterial {
+                    signing_key,
+                    public_key_hex,
+                })),
+                Err(e) => {
+                    log::error!("{ENV_PRIVATE_KEY} could not be parsed: {e}");
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(reason) => {
+                log::error!("{ENV_PRIVATE_KEY} {reason}");
+                None
+            }
+        };
+
+        let account_id: Arc<str> = std::env::var(ENV_ACCOUNT_ID)
+            .unwrap_or_default()
+            .into();
+
+        Ok(Self {
+            http: shared_http(),
             api_base,
-            private_key_hex,
+            signing,
             account_id,
+        })
+    }
+
+    /// Test-only constructor. Accepts an unparsed URL (HTTP loopback for
+    /// mockito) and a hex key; panics on parse failure since tests should
+    /// not be exercising the error path.
+    #[cfg(test)]
+    pub(crate) fn with_test_config(api_base: &str, private_key_hex: &str, account_id: &str) -> Self {
+        let url = Url::parse(api_base).expect("test URL must parse");
+        let (signing_key, public_key_hex) =
+            parse_signing_key(private_key_hex).expect("test key must parse");
+        Self {
             http: reqwest::Client::new(),
+            api_base: url,
+            signing: Some(Arc::new(SigningMaterial {
+                signing_key,
+                public_key_hex,
+            })),
+            account_id: account_id.into(),
         }
     }
 
-    /// Resolve server URL, private key, and account ID from an optional
-    /// caller override and environment variables, falling back to the
-    /// production default URL and an empty account id.
-    ///
-    /// Delegates key handling to [`read_validated_private_key`]: a missing
-    /// key produces a one-shot warning; a key that is set but malformed
-    /// logs an error and continues with an empty key so the first signed
-    /// call surfaces `AuthError::Invalid*` without taking down the
-    /// process. Startup-time validation in `main` is the right place to
-    /// fail fast on misconfiguration.
-    pub(crate) fn from_env(server_url_override: Option<String>) -> Self {
-        let api_base = server_url_override
-            .or_else(|| std::env::var(ENV_SERVER_URL).ok())
-            .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
-        let private_key_hex = match read_validated_private_key() {
-            Ok(Some(k)) => k,
-            Ok(None) => String::new(),
-            Err(reason) => {
-                log::error!("{ENV_PRIVATE_KEY} {reason}");
-                String::new()
-            }
-        };
-        let account_id = std::env::var(ENV_ACCOUNT_ID).unwrap_or_default();
-        Self::new(api_base, private_key_hex, account_id)
+    /// Sign and dispatch a request, returning the `reqwest::Response` so
+    /// callers can `.json()` it.
+    fn signed_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<crate::auth::AuthHeaders, MemWalError> {
+        let signing = self
+            .signing
+            .as_ref()
+            .ok_or(MemWalError::Auth(AuthError::MissingKey))?;
+        Ok(sign_request(
+            &signing.signing_key,
+            &signing.public_key_hex,
+            method,
+            path,
+            body,
+            &self.account_id,
+        )?)
+    }
+
+    fn join_path(&self, path: &str) -> Result<Url, MemWalError> {
+        self.api_base
+            .join(path)
+            .map_err(|e| MemWalError::Config(format!("invalid path `{path}`: {e}")))
     }
 
     // -----------------------------------------------------------------------
@@ -369,25 +516,19 @@ impl MemWalClient {
         body: &B,
     ) -> Result<reqwest::Response, MemWalError> {
         let body_bytes = serde_json::to_vec(body).expect("serializable body");
-        let headers = sign_request(
-            &self.private_key_hex,
-            "POST",
-            path,
-            &body_bytes,
-            &self.account_id,
-        )?;
-        let url = format!("{}{path}", self.api_base);
+        let headers = self.signed_headers("POST", path, &body_bytes)?;
+        let url = self.join_path(path)?;
 
         let mut req = self
             .http
-            .post(&url)
+            .post(url)
             .header("x-public-key", &headers.public_key)
             .header("x-signature", &headers.signature)
             .header("x-timestamp", &headers.timestamp)
             .header("x-nonce", &headers.nonce)
             .header("content-type", "application/json");
         if !self.account_id.is_empty() {
-            req = req.header("x-account-id", &self.account_id);
+            req = req.header("x-account-id", self.account_id.as_ref());
         }
         let resp = req.body(body_bytes).send().await?;
 
@@ -401,24 +542,18 @@ impl MemWalClient {
     }
 
     async fn get(&self, path: &str) -> Result<reqwest::Response, MemWalError> {
-        let headers = sign_request(
-            &self.private_key_hex,
-            "GET",
-            path,
-            b"",
-            &self.account_id,
-        )?;
-        let url = format!("{}{path}", self.api_base);
+        let headers = self.signed_headers("GET", path, b"")?;
+        let url = self.join_path(path)?;
 
         let mut req = self
             .http
-            .get(&url)
+            .get(url)
             .header("x-public-key", &headers.public_key)
             .header("x-signature", &headers.signature)
             .header("x-timestamp", &headers.timestamp)
             .header("x-nonce", &headers.nonce);
         if !self.account_id.is_empty() {
-            req = req.header("x-account-id", &self.account_id);
+            req = req.header("x-account-id", self.account_id.as_ref());
         }
         let resp = req.send().await?;
 
@@ -708,8 +843,8 @@ impl MemWalClient {
     /// [`MEMWAL_API_VERSION`]. A mismatch means the deployed relayer has been
     /// upgraded to an incompatible version and the tools need updating.
     pub(crate) async fn health_check(&self) -> Result<(), MemWalError> {
-        let url = format!("{}/health", self.api_base);
-        let resp = self.http.get(&url).send().await?;
+        let url = self.join_path("/health")?;
+        let resp = self.http.get(url).send().await?;
 
         if !resp.status().is_success() {
             return Err(MemWalError::Server(format!(
@@ -733,15 +868,14 @@ impl MemWalClient {
         Ok(())
     }
 
-    /// Returns `Err` if the private key env var is missing or unparsable.
+    /// Returns `Err(MissingKey)` when the delegate key was missing or
+    /// malformed at construction time. Validity follows from the type:
+    /// `signing` only carries `Some` once `parse_signing_key` succeeded,
+    /// so there is no per-call hex decode or length check to repeat.
     pub(crate) fn validate_key(&self) -> Result<(), AuthError> {
-        if self.private_key_hex.is_empty() {
+        if self.signing.is_none() {
             return Err(AuthError::MissingKey);
         }
-        let raw = hex::decode(&self.private_key_hex)?;
-        let _: [u8; 32] = raw
-            .try_into()
-            .map_err(|v: Vec<u8>| AuthError::InvalidKeyLength(v.len()))?;
         Ok(())
     }
 }

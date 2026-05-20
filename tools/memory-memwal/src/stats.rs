@@ -1,15 +1,7 @@
 //! # `xyz.taluslabs.memory.memwal.stats@1`
 //!
 //! Nexus Tool that reports per-namespace usage for the authenticated MemWal
-//! account: how many memories are stored and how many bytes they take. Use it
-//! as a quota guard in DAGs that ingest unbounded amounts of data — the
-//! relayer enforces a 1 GB storage cap per account and starts rejecting
-//! writes with HTTP 402 once exceeded.
-//!
-//! ## Configuration
-//!
-//! Same as `remember`: `MEMWAL_DELEGATE_PRIVATE_KEY`, `MEMWAL_ACCOUNT_ID`,
-//! `MEMWAL_SERVER_URL`. See `client.rs` for the resolution order.
+//! account: how many memories are stored and how many bytes they take.
 
 use {
     crate::client::MemWalClient,
@@ -25,11 +17,7 @@ pub(crate) struct Input {
     /// Namespace to report on. Defaults to `"default"` on the server when
     /// omitted. Only namespaces owned by the authenticated account return
     /// meaningful data.
-    #[serde(default)]
     namespace: Option<String>,
-    /// Override the relayer URL for this invocation.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -44,15 +32,11 @@ pub(crate) enum Output {
         /// The resolved namespace (mirrors what the server interpreted).
         namespace: String,
     },
-    Err {
-        reason: String,
-    },
+    Err { reason: String },
 }
 
 pub(crate) struct StatsForAccount {
-    default_api_base: String,
-    account_id: String,
-    private_key_hex: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for StatsForAccount {
@@ -60,12 +44,11 @@ impl NexusTool for StatsForAccount {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -81,13 +64,8 @@ impl NexusTool for StatsForAccount {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -95,12 +73,7 @@ impl NexusTool for StatsForAccount {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
-        match client.stats(input.namespace.as_deref()).await {
+        match self.client.stats(input.namespace.as_deref()).await {
             Ok(s) => Output::Ok {
                 memory_count: s.memory_count,
                 storage_bytes: s.storage_bytes,
@@ -119,16 +92,7 @@ mod tests {
 
     fn make_tool(server_url: &str) -> StatsForAccount {
         StatsForAccount {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
-        }
-    }
-
-    fn stats_input(server: &mockito::ServerGuard, namespace: Option<&str>) -> Input {
-        Input {
-            namespace: namespace.map(|s| s.to_string()),
-            server_url: Some(server.url()),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
@@ -155,7 +119,12 @@ mod tests {
             .create_async()
             .await;
 
-        match tool.invoke(stats_input(&server, Some("people"))).await {
+        match tool
+            .invoke(Input {
+                namespace: Some("people".into()),
+            })
+            .await
+        {
             Output::Ok {
                 memory_count,
                 storage_bytes,
@@ -192,8 +161,17 @@ mod tests {
             .create_async()
             .await;
 
-        match tool.invoke(stats_input(&server, Some("empty-ns"))).await {
-            Output::Ok { memory_count, storage_bytes, .. } => {
+        match tool
+            .invoke(Input {
+                namespace: Some("empty-ns".into()),
+            })
+            .await
+        {
+            Output::Ok {
+                memory_count,
+                storage_bytes,
+                ..
+            } => {
                 assert_eq!(memory_count, 0);
                 assert_eq!(storage_bytes, 0);
             }
@@ -215,7 +193,7 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(stats_input(&server, None)).await;
+        let output = tool.invoke(Input { namespace: None }).await;
         assert!(
             matches!(output, Output::Err { .. }),
             "server 503 must produce Err variant"

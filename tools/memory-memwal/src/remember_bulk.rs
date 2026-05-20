@@ -5,21 +5,9 @@
 //! for DAG vertices that produce many memories at once (e.g. an extraction
 //! pipeline emitting multiple structured facts).
 //!
-//! ## Why bulk
-//!
 //! The relayer rate-limits `/api/remember` at weight 5 per call, but
 //! `/api/remember/bulk` costs weight 10 for up to 20 items. That's a 10×
-//! efficiency gain in rate-limit budget when batching is feasible. The
-//! relayer's MAX_BULK_ITEMS = 20 cap is enforced server-side; this tool
-//! does not split larger inputs — callers must chunk if they need more.
-//!
-//! ## Async behaviour
-//!
-//! The call blocks until every item is durably written to Walrus. Internally
-//! the bulk endpoint returns one `job_id` per item; the tool then polls
-//! `POST /api/remember/bulk/status` until every job reaches a terminal
-//! state. A single failed job fails the whole batch (returns `Err`). For
-//! partial-success semantics, call the items individually instead.
+//! efficiency gain in rate-limit budget when batching is feasible.
 
 use {
     crate::client::MemWalClient,
@@ -38,7 +26,6 @@ pub(crate) struct BulkItem {
     text: String,
     /// Namespace for this specific item. Defaults to `"default"` on the
     /// server when omitted.
-    #[serde(default)]
     namespace: Option<String>,
 }
 
@@ -48,9 +35,6 @@ pub(crate) struct Input {
     /// 1–20 items to store. The relayer rejects empty arrays and any batch
     /// over MAX_BULK_ITEMS = 20.
     items: Vec<BulkItem>,
-    /// Override the relayer URL for this invocation.
-    #[serde(default)]
-    server_url: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -58,18 +42,12 @@ pub(crate) struct Input {
 pub(crate) enum Output {
     /// Every item was durably stored. `blob_ids` aligns positionally with the
     /// input `items` array (i.e. `blob_ids[i]` is the blob for `items[i]`).
-    Ok {
-        blob_ids: Vec<String>,
-    },
-    Err {
-        reason: String,
-    },
+    Ok { blob_ids: Vec<String> },
+    Err { reason: String },
 }
 
 pub(crate) struct RememberBulkMemories {
-    default_api_base: String,
-    account_id: String,
-    private_key_hex: String,
+    client: MemWalClient,
 }
 
 impl NexusTool for RememberBulkMemories {
@@ -77,12 +55,11 @@ impl NexusTool for RememberBulkMemories {
     type Output = Output;
 
     async fn new() -> Self {
-        let client = MemWalClient::from_env(None);
-        Self {
-            default_api_base: client.api_base,
-            private_key_hex: client.private_key_hex,
-            account_id: client.account_id,
-        }
+        let client = MemWalClient::from_env().unwrap_or_else(|e| {
+            log::error!("relayer configuration invalid: {e}");
+            panic!("relayer configuration invalid: {e}")
+        });
+        Self { client }
     }
 
     fn fqn() -> ToolFqn {
@@ -98,13 +75,8 @@ impl NexusTool for RememberBulkMemories {
     }
 
     async fn health(&self) -> AnyResult<StatusCode> {
-        let client = MemWalClient::new(
-            self.default_api_base.clone(),
-            self.private_key_hex.clone(),
-            self.account_id.clone(),
-        );
-        client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
-        client
+        self.client.validate_key().map_err(|e| anyhow::anyhow!(e))?;
+        self.client
             .health_check()
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -112,21 +84,16 @@ impl NexusTool for RememberBulkMemories {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let api_base = input
-            .server_url
-            .unwrap_or_else(|| self.default_api_base.clone());
-        let client = MemWalClient::new(api_base, self.private_key_hex.clone(), self.account_id.clone());
-
         // Map our owned `Vec<BulkItem>` into the borrowed `(&str, Option<&str>)`
-        // tuple shape the client expects. This avoids `Item<'_>` lifetime gymnastics
-        // by keeping the inputs alive in `items_refs`.
+        // tuple shape the client expects. This avoids `Item<'_>` lifetime
+        // gymnastics by keeping the inputs alive in `items_refs`.
         let items_refs: Vec<(&str, Option<&str>)> = input
             .items
             .iter()
             .map(|i| (i.text.as_str(), i.namespace.as_deref()))
             .collect();
 
-        let job_ids = match client.remember_bulk(&items_refs).await {
+        let job_ids = match self.client.remember_bulk(&items_refs).await {
             Ok(ids) => ids,
             Err(e) => {
                 return Output::Err {
@@ -135,7 +102,7 @@ impl NexusTool for RememberBulkMemories {
             }
         };
 
-        match client.poll_bulk_jobs(&job_ids).await {
+        match self.client.poll_bulk_jobs(&job_ids).await {
             Ok(blob_ids) => Output::Ok { blob_ids },
             Err(e) => Output::Err {
                 reason: e.to_string(),
@@ -150,13 +117,11 @@ mod tests {
 
     fn make_tool(server_url: &str) -> RememberBulkMemories {
         RememberBulkMemories {
-            default_api_base: server_url.to_string(),
-            private_key_hex: hex::encode([0x42u8; 32]),
-            account_id: String::new(),
+            client: MemWalClient::with_test_config(server_url, &hex::encode([0x42u8; 32]), ""),
         }
     }
 
-    fn bulk_input(server: &mockito::ServerGuard, texts: &[&str]) -> Input {
+    fn bulk_input(texts: &[&str]) -> Input {
         Input {
             items: texts
                 .iter()
@@ -165,7 +130,6 @@ mod tests {
                     namespace: None,
                 })
                 .collect(),
-            server_url: Some(server.url()),
         }
     }
 
@@ -212,9 +176,7 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool
-            .invoke(bulk_input(&server, &["one", "two", "three"]))
-            .await;
+        let output = tool.invoke(bulk_input(&["one", "two", "three"])).await;
         match output {
             Output::Ok { blob_ids } => {
                 assert_eq!(blob_ids, vec!["blob1", "blob2", "blob3"]);
@@ -257,7 +219,7 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(bulk_input(&server, &["a", "b"])).await;
+        let output = tool.invoke(bulk_input(&["a", "b"])).await;
         assert!(
             matches!(output, Output::Err { .. }),
             "any failed job must produce Err"
@@ -265,8 +227,7 @@ mod tests {
     }
 
     /// `invoke` returns `Err` when the initial bulk POST fails (4xx/5xx).
-    /// Failure mode caught: the initial-submit error is swallowed, e.g. an
-    /// over-cap batch (>20) returning 400 mapped to silent success.
+    /// Failure mode caught: the initial-submit error is swallowed.
     #[tokio::test]
     async fn invoke_returns_err_on_submit_failure() {
         let mut server = Server::new_async().await;
@@ -279,7 +240,7 @@ mod tests {
             .create_async()
             .await;
 
-        let output = tool.invoke(bulk_input(&server, &["x"])).await;
+        let output = tool.invoke(bulk_input(&["x"])).await;
         assert!(
             matches!(output, Output::Err { .. }),
             "submit-time 400 must produce Err"

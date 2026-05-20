@@ -50,8 +50,10 @@ BIND_ADDR=0.0.0.0:9000 cargo run --package memory-memwal
 | `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). When set, sent as `x-account-id` and embedded in the signed canonical message — matches the JS SDK 1:1 and skips the relayer's slow on-chain registry scan. |
 | `MEMWAL_SERVER_URL` | no | `https://relayer.staging.memwal.ai` (testnet) | MemWal relayer base URL. Set to `https://relayer.memwal.ai` for mainnet. |
 
-The per-invocation `server_url` input field on every tool overrides
-`MEMWAL_SERVER_URL` for that single call.
+Set `MEMWAL_ALLOW_INSECURE=1` to accept `http://` relayer URLs (local
+development and mockito tests only). Production deploys must leave this
+unset; the URL validator rejects non-`https` schemes by default and
+rejects URLs that carry a path, query, or fragment.
 
 ## Server Endpoints
 
@@ -87,11 +89,6 @@ The text to store as a memory.
 
 Namespace used to scope this memory. Defaults to `"default"` on the server
 when omitted.
-
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation. Falls back to `MEMWAL_SERVER_URL`
-then `https://relayer.memwal.ai`.
 
 ## Output Variants & Ports
 
@@ -142,10 +139,6 @@ Maximum number of results to return. Server default applies when omitted.
 **`namespace`: `String`** *(optional)*
 
 Namespace to search within. Searches the `"default"` namespace when omitted.
-
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
 
 ## Output Variants & Ports
 
@@ -205,10 +198,6 @@ omitted.
 Maximum number of source memories to inject as context. Server default applies
 when omitted.
 
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
-
 ## Output Variants & Ports
 
 **`ok`**
@@ -265,10 +254,6 @@ The text from which to extract and store facts.
 Namespace to store the extracted facts in. Uses the `"default"` namespace when
 omitted.
 
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
-
 ## Output Variants & Ports
 
 **`ok`**
@@ -319,10 +304,6 @@ Each entry has:
 - **`namespace`: `String`** *(optional)* — namespace for this item. A single
   bulk call can write to multiple namespaces.
 
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
-
 ## Output Variants & Ports
 
 **`ok`**
@@ -368,10 +349,6 @@ recovering quota before the 1 GB per-account cap is hit.
 
 The namespace to clear. Defaults to `"default"` on the server when omitted.
 
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
-
 ## Output Variants & Ports
 
 **`ok`**
@@ -414,10 +391,6 @@ returning HTTP 402 once that's exceeded.
 **`namespace`: `String`** *(optional)*
 
 Defaults to `"default"` on the server when omitted.
-
-**`server_url`: `String`** *(optional)*
-
-Override the relayer URL for this invocation.
 
 ## Output Variants & Ports
 
