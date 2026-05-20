@@ -1,14 +1,21 @@
 # syntax=docker/dockerfile:1
 # Shared Dockerfile for all offchain Nexus tools.
 #
-# Builds a single tool binary identified by PACKAGE and BINARY build args,
-# embeds TOOL_FQN_VERSION (computed by CI from the tool's subtree hash)
-# so the tool's FQN strings carry the content-addressed version.
+# Builds a single tool binary identified by BINARY and TOOL_DIR build args
+# (TOOL_DIR is the tool's path relative to the build context, e.g.
+# "offchain/tools/http"), embeds TOOL_FQN_VERSION (computed by CI from the
+# tool's subtree hash) so the tool's FQN strings carry the content-addressed
+# version.
+#
+# Building via --manifest-path scopes cargo to the workspace member's
+# Cargo.toml, sidestepping ambiguity when a tool crate's name collides with
+# a transitive crates.io dep of the same name (e.g. our `http` tool vs the
+# `http` crate pulled in by reqwest).
 
 FROM rust:1.93.1-slim-bookworm AS builder
 
-ARG PACKAGE
 ARG BINARY
+ARG TOOL_DIR
 ARG TOOL_FQN_VERSION=1
 
 # Surfaced as a cargo env var via build.rs -> env!("TOOL_FQN_VERSION").
@@ -27,9 +34,10 @@ COPY offchain/ ./offchain/
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/app/offchain/target,sharing=locked \
     set -e && \
-    cd offchain && \
-    cargo build --locked --profile release --bin "${BINARY}" -p "${PACKAGE}" && \
-    cp "target/release/${BINARY}" "/app/${BINARY}"
+    cargo build --locked --profile release \
+        --manifest-path "${TOOL_DIR}/Cargo.toml" \
+        --bin "${BINARY}" && \
+    cp "offchain/target/release/${BINARY}" "/app/${BINARY}"
 
 # ── Collect runtime libs for the distroless stage ─────────────────────
 FROM debian:bookworm-slim AS lib-collector

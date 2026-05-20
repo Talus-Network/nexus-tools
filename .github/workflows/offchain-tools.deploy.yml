@@ -82,8 +82,8 @@ jobs:
           platforms: linux/amd64
           push: ${{ !inputs.dry-run }}
           build-args: |
-            PACKAGE=${{ matrix.tool }}
             BINARY=${{ matrix.command }}
+            TOOL_DIR=${{ matrix.dir }}
             TOOL_FQN_VERSION=${{ matrix.version }}
           tags: ${{ steps.tags.outputs.list }}
           cache-from: type=gha,scope=offchain-${{ matrix.tool }}
