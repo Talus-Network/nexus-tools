@@ -7,10 +7,24 @@ on:
         description: 'PR number to publish for (chain ops fire against the PR HEAD)'
         required: false
         type: string
+      target-env:
+        description: 'Deploy the dispatched ref directly against this env. For iteration on the deploy pipeline without merging to main. Leave empty if using pr-number.'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - testnet
+          - mainnet
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [main, testnet, mainnet]
+    branches:
+      - main
+      - testnet
+      - mainnet
+      - 'iterate/testnet/**'
+      - 'iterate/mainnet/**'
 
 permissions:
   contents: write
@@ -48,16 +62,34 @@ jobs:
     with:
       base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
+  # target-ref passed to callables. The callables' `environment:` expression
+  # treats this string as the env hint: it resolves to 'mainnet' when this
+  # evaluates to 'mainnet', else 'testnet'. Precedence:
+  #   1. PR# dispatch → PR base branch (testnet/mainnet)
+  #   2. dispatch with target-env input → that env literal
+  #   3. push to iterate/<env>/...   → that env literal
+  #   4. PR event                    → PR base
+  #   5. push to a deploy branch     → branch name (main/testnet/mainnet)
+
   # ── Build / push ─────────────────────────────────────────────
   # PR (any base): dry-run on changed matrix.
-  # Push main/testnet/mainnet: push on all matrix.
-  # workflow_dispatch with PR#: push on all matrix.
+  # Push main: push on changed matrix (no chain ops).
+  # Push testnet/mainnet/iterate/<env>/**: push on all matrix.
+  # workflow_dispatch with PR# or target-env: push on all matrix.
   deploy:
     needs: [discover, resolve-target]
     if: always() && !cancelled() && needs.discover.result == 'success'
     uses: ./.github/workflows/offchain-tools.deploy.yml
     with:
-      target-ref: ${{ needs.resolve-target.outputs.base-ref || (github.event_name == 'pull_request' && github.base_ref) || github.ref_name }}
+      target-ref: >-
+        ${{
+          needs.resolve-target.outputs.base-ref ||
+          inputs.target-env ||
+          (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
+          (github.event_name == 'pull_request' && github.base_ref) ||
+          github.ref_name
+        }}
       matrix-json: >-
         ${{
           (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'main'))
@@ -67,16 +99,32 @@ jobs:
       dry-run: ${{ github.event_name == 'pull_request' }}
     secrets: inherit
 
-  # ── Prepare (only on push to testnet/mainnet or workflow_dispatch) ──
+  # ── Prepare ──────────────────────────────────────────────────
+  # Fires on:
+  #   - push to testnet/mainnet/iterate/<env>/**
+  #   - workflow_dispatch with pr-number OR target-env
   prepare:
     needs: [discover, deploy, resolve-target]
     if: >-
       always() && !cancelled() && needs.deploy.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.pr-number != '') ||
-       (github.event_name == 'push' && (github.ref_name == 'testnet' || github.ref_name == 'mainnet')))
+      ((github.event_name == 'workflow_dispatch' && (inputs.pr-number != '' || inputs.target-env != '')) ||
+       (github.event_name == 'push' && (
+         github.ref_name == 'testnet' ||
+         github.ref_name == 'mainnet' ||
+         startsWith(github.ref_name, 'iterate/testnet/') ||
+         startsWith(github.ref_name, 'iterate/mainnet/')
+       )))
     uses: ./.github/workflows/offchain-tools.prepare.yml
     with:
-      target-ref: ${{ needs.resolve-target.outputs.base-ref || (github.event_name == 'pull_request' && github.base_ref) || github.ref_name }}
+      target-ref: >-
+        ${{
+          needs.resolve-target.outputs.base-ref ||
+          inputs.target-env ||
+          (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
+          (github.event_name == 'pull_request' && github.base_ref) ||
+          github.ref_name
+        }}
       matrix-json: ${{ needs.discover.outputs.matrix-all }}
     secrets: inherit
 
@@ -86,7 +134,15 @@ jobs:
     if: always() && !cancelled() && needs.prepare.result == 'success'
     uses: ./.github/workflows/offchain-tools.register.yml
     with:
-      target-ref: ${{ needs.resolve-target.outputs.base-ref || (github.event_name == 'pull_request' && github.base_ref) || github.ref_name }}
+      target-ref: >-
+        ${{
+          needs.resolve-target.outputs.base-ref ||
+          inputs.target-env ||
+          (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
+          (github.event_name == 'pull_request' && github.base_ref) ||
+          github.ref_name
+        }}
     secrets: inherit
 
   # ── Readiness (PRs targeting testnet/mainnet only) ──────────
