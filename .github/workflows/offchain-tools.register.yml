@@ -1,0 +1,273 @@
+name: Offchain Tools Register
+
+on:
+  workflow_call:
+    inputs:
+      target-ref:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  NEXUS_TAG: ${{ vars.NEXUS_TAG }}
+  SUI_CHANNEL: ${{ vars.SUI_CHANNEL }}
+
+jobs:
+  register:
+    name: Register offchain tools
+    runs-on: ubuntu-latest
+    environment: >-
+      ${{
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        'testnet'
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Sui CLI
+        uses: ./.github/actions/install-sui
+        with:
+          sui-channel: ${{ vars.SUI_CHANNEL }}
+          cache-version: ${{ vars.SUI_CACHE_VERSION }}
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: offchain-tools-prepare
+          path: ${{ runner.temp }}/prepare
+
+      - name: Show artifacts
+        id: artifacts
+        run: |
+          PREPARE="${{ runner.temp }}/prepare"
+          echo "manifest=${PREPARE}/manifest.json" >> "$GITHUB_OUTPUT"
+          echo "meta_dir=${PREPARE}/meta" >> "$GITHUB_OUTPUT"
+          jq . "${PREPARE}/manifest.json"
+
+      - name: Authenticate to GCP (protocol)
+        id: auth-gcs
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools-protocol
+
+      - name: Authenticate to GCP (infra)
+        uses: ./.github/actions/gcp-auth-infra
+        with:
+          project-id: ${{ vars.GCP_INFRA_PROJECT_ID }}
+          project-number: ${{ vars.GCP_INFRA_PROJECT_NUMBER }}
+          provider-name: nexus-tools
+
+      - name: Install Nexus CLI
+        uses: ./.github/actions/install-nexus-cli
+        with:
+          nexus-tag: ${{ env.NEXUS_TAG }}
+          infra-registry: gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}
+
+      - name: Configure wallet and Nexus
+        run: |
+          set -euo pipefail
+          yes "" | sui client new-env --alias tool-register --rpc "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" || true
+          sui client switch --env tool-register
+
+          IMPORT=$(sui keytool import "${{ secrets.SUI_DEPLOYER_MNEMONIC }}" ed25519)
+          ADDR=$(echo "$IMPORT" | grep -oE '0x[0-9a-fA-F]{64}')
+          sui client switch --address "$ADDR"
+          echo "DEPLOYER_ADDR=$ADDR" >> "$GITHUB_ENV"
+
+          KEY_INDEX=$(sui keytool list --json | jq -r --arg addr "$ADDR" 'to_entries[] | select(.value.suiAddress == $addr) | .key')
+          SUI_PK=$(jq -r --argjson idx "$KEY_INDEX" '.[$idx]' "$HOME/.sui/sui_config/sui.keystore")
+
+          NETWORK="${{ vars.SUI_NETWORK }}"
+          wget -q -O "$RUNNER_TEMP/objects.toml" \
+            "https://storage.googleapis.com/production-talus-sui-objects/${{ env.NEXUS_TAG }}/objects.${NETWORK}.toml?t=$(date +%s)"
+
+          mkdir -p "$HOME/.nexus"
+          cp "$RUNNER_TEMP/objects.toml" "$HOME/.nexus/objects.${NETWORK}.toml"
+          nexus conf set \
+            --nexus.objects "$HOME/.nexus/objects.${NETWORK}.toml" \
+            --sui.rpc-url "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" \
+            --sui.pk "$SUI_PK"
+
+      - name: Load Nexus objects
+        run: |
+          set -euo pipefail
+          WORKFLOW_PKG=$(grep '^workflow_pkg_id' "$RUNNER_TEMP/objects.toml" | cut -d'"' -f2)
+          TOOL_REGISTRY=$(grep -A1 '^\[tool_registry\]' "$RUNNER_TEMP/objects.toml" | grep 'object_id' | cut -d'"' -f2)
+          GAS_SERVICE=$(grep -A1 '^\[gas_service\]' "$RUNNER_TEMP/objects.toml" | grep 'object_id' | cut -d'"' -f2)
+          echo "WORKFLOW_PKG=$WORKFLOW_PKG" >> "$GITHUB_ENV"
+          echo "TOOL_REGISTRY=$TOOL_REGISTRY" >> "$GITHUB_ENV"
+          echo "GAS_SERVICE=$GAS_SERVICE" >> "$GITHUB_ENV"
+
+      - name: Register offchain tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          REGISTERED=$(nexus tool list --json 2>/dev/null | jq -r '.[].fqn' 2>/dev/null || true)
+          echo "::group::Already registered"; echo "$REGISTERED"; echo "::endgroup::"
+
+          to_bytes() { printf '%s' "$1" | xxd -i -c 9999 | grep '0x' | tr -d ' \n' | sed 's/,$//'; }
+          COIN_ID=$(sui client gas --json | jq -r '.[0].gasCoinId')
+          echo "Using coin: $COIN_ID"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            META="${META_DIR}/${TOOL}.json"
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            COUNT=$(jq 'length' "$META")
+            for i in $(seq 0 $((COUNT - 1))); do
+              FQN=$(jq -r ".[$i].fqn" "$META")
+              TOOL_URL="http://${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+
+              if echo "$REGISTERED" | grep -qF "$FQN"; then
+                echo "  ✓ $FQN already registered, skipping"
+                continue
+              fi
+
+              DESC=$(jq -r ".[$i].description" "$META")
+              TIMEOUT=$(jq -r ".[$i].timeout" "$META")
+              INPUT_SCHEMA=$(jq -c ".[$i].input_schema" "$META")
+              OUTPUT_SCHEMA=$(jq -c ".[$i].output_schema" "$META")
+
+              FQN_VEC="vector[$(to_bytes "$FQN")]"
+              URL_VEC="vector[$(to_bytes "$TOOL_URL")]"
+              DESC_VEC="vector[$(to_bytes "$DESC")]"
+              IN_VEC="vector[$(to_bytes "$INPUT_SCHEMA")]"
+              OUT_VEC="vector[$(to_bytes "$OUTPUT_SCHEMA")]"
+
+              PTB_ARGS="\
+                --move-call 0x1::ascii::string \"${FQN_VEC}\" \
+                --assign fqn \
+                --move-call ${WORKFLOW_PKG}::tool_registry::register_off_chain_tool \
+                  @${TOOL_REGISTRY} fqn \
+                  \"${URL_VEC}\" \"${DESC_VEC}\" \"${IN_VEC}\" \"${OUT_VEC}\" \
+                  ${TIMEOUT}u64 @${COIN_ID} @0x6 \
+                --assign r \
+                --move-call ${WORKFLOW_PKG}::gas::deescalate r.0 r.1 \
+                --assign g \
+                --move-call ${WORKFLOW_PKG}::gas::create_tool_gas_and_share \
+                  @${GAS_SERVICE} r.0 g 0u64 \
+                --move-call 0x2::transfer::public_share_object \
+                  \"<${WORKFLOW_PKG}::tool_registry::Tool>\" r.0 \
+                --transfer-objects \"[r.1, g]\" @${DEPLOYER_ADDR} \
+                --gas-budget 100000000 \
+                --json"
+
+              OUT=$(eval "sui client ptb $PTB_ARGS")
+              STATUS=$(echo "$OUT" | jq -r '.effects.status.status')
+              if [ "$STATUS" != "success" ]; then
+                echo "::error::PTB failed for $FQN"
+                echo "$OUT" | jq '.effects.status'
+                exit 1
+              fi
+
+              CAP_ID=$(echo "$OUT" | jq -r '[.objectChanges[] | select(.objectType | test("OverTool")) | .objectId] | .[0]')
+              if [ -z "$CAP_ID" ] || [ "$CAP_ID" = "null" ]; then
+                echo "::error::No OwnerCap<OverTool> for $FQN"
+                exit 1
+              fi
+
+              jq -n --arg fqn "$FQN" --arg cap "$CAP_ID" \
+                '{fqn: $fqn, owner_cap_over_tool: $cap}' \
+                | gsutil cp - "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+              echo "  + $FQN registered (cap=$CAP_ID)"
+            done
+          done
+
+      - name: Register signing keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            VERSIONED="${TOOL}-v${VERSION}"
+
+            KEYS=$(gcloud secrets versions access latest \
+              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --project="$PROJECT")
+            KEYS_HASH=$(echo "$KEYS" | jq -c '[.keys_registry[] | {fqn, public_key_hex}]' | sha256sum | cut -c1-16)
+
+            for FQN in $(jq -r '.[].fqn' "${META_DIR}/${TOOL}.json"); do
+              REG=$(gsutil cat "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json")
+              OWNER_CAP=$(echo "$REG" | jq -r '.owner_cap_over_tool')
+              REGISTERED_HASH=$(echo "$REG" | jq -r '.signing_key_hash // ""')
+              if [ "$REGISTERED_HASH" = "$KEYS_HASH" ]; then
+                echo "  ✓ $FQN signing key unchanged — skipping"
+                continue
+              fi
+
+              PRIVATE_KEY=$(echo "$KEYS" | jq -re --arg f "$FQN" '.keys_registry[] | select(.fqn == $f) | .private_key_hex')
+              REG_OUT=$(nexus tool auth register-key \
+                --json \
+                --tool-fqn "$FQN" \
+                --owner-cap "$OWNER_CAP" \
+                --signing-key "$PRIVATE_KEY" \
+                --description "ci-managed")
+              KID=$(echo "$REG_OUT" | jq -r '.tool_kid')
+
+              echo "$REG" | jq --arg h "$KEYS_HASH" --argjson kid "$KID" \
+                '. + {signing_key_hash: $h, tool_kid: $kid}' \
+                | gsutil cp - "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+              echo "  + $FQN registered with tool_kid=$KID"
+            done
+          done
+
+      - name: Reconcile toolkit-config secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            VERSIONED="${TOOL}-v${VERSION}"
+            SECRET="nexus-tools-${VERSIONED}-signed-http-toolkit-config"
+
+            gcloud secrets describe "$SECRET" --project="$PROJECT" >/dev/null 2>&1 \
+              || gcloud secrets create "$SECRET" --project="$PROJECT" --replication-policy=automatic
+
+            SKELETON=$(gcloud secrets versions access latest \
+              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --project="$PROJECT" \
+              | jq -c '.toolkit_config')
+
+            DESIRED="$SKELETON"
+            for FQN in $(jq -r '.[].fqn' "${META_DIR}/${TOOL}.json"); do
+              REG=$(gsutil cat "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json")
+              KID=$(echo "$REG" | jq -r '.tool_kid // "MISSING"')
+              if [ "$KID" = "MISSING" ] || [ "$KID" = "null" ]; then
+                echo "::error::No tool_kid for $FQN — refusing to write toolkit-config"
+                exit 1
+              fi
+              DESIRED=$(echo "$DESIRED" | jq -c --arg fqn "$FQN" --argjson kid "$KID" \
+                '.signed_http.tools[$fqn].tool_kid = $kid')
+            done
+
+            CURRENT=$(gcloud secrets versions access latest \
+              --secret="$SECRET" --project="$PROJECT" 2>/dev/null | jq -c . 2>/dev/null || echo "")
+            if [ "$DESIRED" = "$CURRENT" ]; then
+              echo "  ✓ toolkit-config for $VERSIONED unchanged"
+            else
+              echo -n "$DESIRED" | gcloud secrets versions add "$SECRET" --project="$PROJECT" --data-file=-
+              echo "  + Wrote new toolkit-config for $VERSIONED"
+            fi
+          done
