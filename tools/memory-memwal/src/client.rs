@@ -492,16 +492,18 @@ fn allow_insecure() -> bool {
         .unwrap_or(false)
 }
 
-/// Parse a candidate relayer base URL.
+/// Parse a candidate relayer base URL against the relayer-URL policy.
 ///
-/// - Requires `https://` unless `MEMWAL_ALLOW_INSECURE=1` is set, in which
-///   case `http://` is accepted. This is a policy applied at the application
-///   boundary; the underlying `reqwest::Client` itself is not
-///   `.https_only(true)` so test mocks can use loopback HTTP.
+/// - Requires `https://` unless `allow_insecure` is `true`, in which case
+///   `http://` is also accepted. The flag is parameterised (rather than
+///   read from env here) so the policy is pure-testable.
 /// - Rejects paths, queries, and fragments in the base — `Url::join` would
 ///   otherwise concatenate them with the per-call path and silently rewrite
 ///   the signed message's path segment.
-fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
+/// - Rejects userinfo (`https://user:secret@host`) — basic-auth has no
+///   place on a relayer URL that authenticates via signed headers, and
+///   leaving it in would tag every outbound request with the credentials.
+fn parse_relayer_url(raw: &str, allow_insecure: bool) -> Result<Url, MemWalError> {
     // Don't echo the raw URL in the parse-failure message: an operator who
     // accidentally embedded credentials (`https://user:secret@host/...`)
     // and then mistyped the rest would otherwise leak them into stderr,
@@ -510,7 +512,7 @@ fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
     let url = Url::parse(raw)
         .map_err(|e| MemWalError::Config(format!("invalid relayer URL: {e}")))?;
     let scheme = url.scheme();
-    let scheme_ok = scheme == "https" || (allow_insecure() && scheme == "http");
+    let scheme_ok = scheme == "https" || (allow_insecure && scheme == "http");
     if !scheme_ok {
         return Err(MemWalError::Config(format!(
             "relayer URL must use https (got scheme `{scheme}`)"
@@ -527,11 +529,7 @@ fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
             "relayer URL must not carry a query or fragment".into(),
         ));
     }
-    if url.username() != "" || url.password().is_some() {
-        // Userinfo in a relayer URL is almost certainly a configuration
-        // mistake (the relayer authenticates via signed headers, not basic
-        // auth). Refuse it rather than letting it tag along on every
-        // outbound request.
+    if !url.username().is_empty() || url.password().is_some() {
         return Err(MemWalError::Config(
             "relayer URL must not embed credentials (userinfo)".into(),
         ));
@@ -583,7 +581,7 @@ impl MemWalClient {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
-        let api_base = parse_relayer_url(&api_base_raw)?;
+        let api_base = parse_relayer_url(&api_base_raw, allow_insecure())?;
 
         let signing = match read_validated_private_key() {
             Ok(Some(hex)) => match parse_signing_key(&hex) {
@@ -1194,6 +1192,135 @@ mod tests {
     fn classify_key_ok_on_all_ones_32_bytes() {
         let key = hex::encode([0xffu8; 32]);
         assert_eq!(classify_key(Some(&key)), KeyValidation::Ok(Zeroizing::new(key)));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_relayer_url policy tests
+    //
+    // The flag is passed explicitly (rather than read from env) so each test
+    // is hermetic — no global state, no test ordering, no MEMWAL_ALLOW_INSECURE
+    // bleed-through across the suite.
+    // -----------------------------------------------------------------------
+
+    /// Accepts a canonical https URL with no trailing slash.
+    /// Failure mode caught: an over-strict validator that rejects the most
+    /// common form would block the default deployment.
+    #[test]
+    fn parse_relayer_url_accepts_canonical_https() {
+        assert!(parse_relayer_url("https://relayer.memwal.ai", false).is_ok());
+    }
+
+    /// Accepts a trailing slash — url::Url normalises the path to "/".
+    /// Failure mode caught: a regression where the path check rejects "/"
+    /// would break operators who copy-paste from a browser bar.
+    #[test]
+    fn parse_relayer_url_accepts_trailing_slash() {
+        assert!(parse_relayer_url("https://relayer.memwal.ai/", false).is_ok());
+    }
+
+    /// Accepts an explicit port.
+    /// Failure mode caught: a host:port URL is misparsed or rejected.
+    #[test]
+    fn parse_relayer_url_accepts_port() {
+        assert!(parse_relayer_url("https://relayer.memwal.ai:8443", false).is_ok());
+    }
+
+    /// Rejects http:// when allow_insecure is false.
+    /// Failure mode caught: a regression that defaults to permissive
+    /// scheme handling would let an operator (or a tool input that hadn't
+    /// been removed) downgrade signing material to cleartext.
+    #[test]
+    fn parse_relayer_url_rejects_http_when_insecure_disallowed() {
+        let err = parse_relayer_url("http://relayer.memwal.ai", false).expect_err("must reject http");
+        assert!(err.to_string().contains("https"));
+    }
+
+    /// Accepts http:// when allow_insecure is true (for local dev / mockito).
+    /// Failure mode caught: the escape hatch is broken; mockito tests can't
+    /// construct a real `MemWalClient::from_env` path.
+    #[test]
+    fn parse_relayer_url_accepts_http_when_insecure_allowed() {
+        assert!(parse_relayer_url("http://127.0.0.1:1234", true).is_ok());
+    }
+
+    /// Rejects exotic schemes regardless of allow_insecure.
+    /// Failure mode caught: a `ws://` or `file://` URL bypasses scheme
+    /// checks and reaches reqwest, which would either error obscurely or
+    /// open an unintended transport.
+    #[test]
+    fn parse_relayer_url_rejects_non_http_schemes() {
+        for s in ["ws://x", "file:///etc/passwd", "data:text/plain,foo"] {
+            assert!(
+                parse_relayer_url(s, true).is_err(),
+                "expected rejection of `{s}` even with allow_insecure"
+            );
+        }
+    }
+
+    /// Rejects URLs that carry a path beyond the root.
+    /// Failure mode caught: `Url::join("/api/remember")` against a base
+    /// like `https://host/v1` would yield `https://host/api/remember`
+    /// (Url::join treats absolute paths as replacements), silently
+    /// rewriting what the operator configured.
+    #[test]
+    fn parse_relayer_url_rejects_path() {
+        let err = parse_relayer_url("https://relayer.memwal.ai/v1", false).expect_err("path must be rejected");
+        assert!(err.to_string().contains("path"));
+    }
+
+    /// Rejects URLs that carry a query string.
+    /// Failure mode caught: `?leak=/api/recall` smuggled in the base URL
+    /// would either be silently dropped by Url::join or merged into the
+    /// signed-path semantics, depending on the relayer's parsing.
+    #[test]
+    fn parse_relayer_url_rejects_query() {
+        let err = parse_relayer_url("https://relayer.memwal.ai/?leak=1", false).expect_err("query must be rejected");
+        assert!(err.to_string().contains("query") || err.to_string().contains("fragment"));
+    }
+
+    /// Rejects URLs that carry a fragment.
+    /// Failure mode caught: same shape as the query case; fragments are
+    /// usually stripped client-side but should not be silently accepted.
+    #[test]
+    fn parse_relayer_url_rejects_fragment() {
+        let err = parse_relayer_url("https://relayer.memwal.ai/#frag", false).expect_err("fragment must be rejected");
+        assert!(err.to_string().contains("query") || err.to_string().contains("fragment"));
+    }
+
+    /// Rejects URLs that embed a username.
+    /// Failure mode caught: an operator who pastes `https://user@host`
+    /// (e.g. from a curl command) would otherwise have the username
+    /// tagged onto every outbound request as a Basic-Auth identifier
+    /// — pointless against this relayer and an unintended exposure.
+    #[test]
+    fn parse_relayer_url_rejects_userinfo_username_only() {
+        let err = parse_relayer_url("https://user@relayer.memwal.ai", false).expect_err("userinfo must be rejected");
+        assert!(err.to_string().contains("credentials"));
+    }
+
+    /// Rejects URLs that embed a username and password.
+    /// Failure mode caught: the more dangerous variant of the userinfo
+    /// case — a real secret tagged onto every outbound request, AND a
+    /// secret that would have leaked through parse-error echoes before
+    /// the no-echo policy was put in place.
+    #[test]
+    fn parse_relayer_url_rejects_userinfo_with_password() {
+        let err = parse_relayer_url("https://user:secret@relayer.memwal.ai", false).expect_err("userinfo must be rejected");
+        assert!(err.to_string().contains("credentials"));
+    }
+
+    /// Parse-failure messages do NOT echo the raw input.
+    /// Failure mode caught: a future refactor reintroduces `{raw}` into
+    /// the error string and a typoed `https://user:secret@host/bad path`
+    /// (unparsable due to space) leaks the secret into logs and panic
+    /// messages.
+    #[test]
+    fn parse_relayer_url_does_not_echo_raw_on_parse_failure() {
+        let err = parse_relayer_url("https://user:secret@host/bad path", false)
+            .expect_err("malformed URL must Err");
+        let msg = err.to_string();
+        assert!(!msg.contains("secret"), "secret leaked into error: {msg}");
+        assert!(!msg.contains("user"), "userinfo leaked into error: {msg}");
     }
 
     fn make_client(server_url: &str) -> MemWalClient {
