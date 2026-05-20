@@ -37,25 +37,30 @@ use {
 /// once per process even though `from_env` runs once per registered tool.
 static WARN_MISSING_KEY: Once = Once::new();
 
-/// Load a `.env` file into the process environment if one is present.
+/// Load `<cwd>/.env` into the process environment if it exists.
 ///
-/// Uses `dotenvy::dotenv()`, which searches starting at the process's current
-/// working directory and walks up the parent chain until it finds a `.env`.
-/// **Existing exports always win** — variables already set in the environment
-/// are not overwritten. This matches the just `server-start` wrapper's
-/// snapshot/restore behavior, so the two paths agree on precedence.
+/// Restricted to the current working directory (no parent walk) so a `.env`
+/// planted at `/`, `/etc/`, or any ancestor of the binary's cwd cannot
+/// influence the process. Existing exports always win — variables already
+/// set in the environment are not overwritten.
 ///
-/// Failure modes:
-/// - No `.env` anywhere on the walk → silent, normal in container deploys
-///   where env vars come from the orchestrator.
-/// - `.env` found but unreadable / malformed → one-line WARN to stderr; boot
-///   continues so missing/invalid `MEMWAL_DELEGATE_PRIVATE_KEY` is still
-///   surfaced by [`validate_credentials_at_startup`].
+/// Must be called from `main` **before** the tokio runtime is built so the
+/// `set_var` calls happen single-threaded, even though the practical race
+/// window in this binary is empty.
 pub(crate) fn load_dotenv_if_present() {
-    match dotenvy::dotenv() {
-        Ok(path) => eprintln!("INFO: loaded env vars from {}", path.display()),
-        Err(e) if e.not_found() => {}
-        Err(e) => eprintln!("WARN: failed to load .env: {e}"),
+    let candidate = match std::env::current_dir() {
+        Ok(d) => d.join(".env"),
+        Err(e) => {
+            log::warn!("could not read cwd while looking for .env: {e}");
+            return;
+        }
+    };
+    if !candidate.is_file() {
+        return;
+    }
+    match dotenvy::from_path(&candidate) {
+        Ok(()) => log::info!("loaded env vars from {}", candidate.display()),
+        Err(e) => log::warn!("failed to load {}: {e}", candidate.display()),
     }
 }
 
@@ -106,42 +111,38 @@ fn classify_key(value: Option<&str>) -> KeyValidation {
 /// Run the delegate-key validation eagerly at process startup.
 ///
 /// `bootstrap!` constructs `NexusTool` instances lazily on first request, so
-/// without this hook the FATAL-on-malformed-key path would only fire when an
-/// `/invoke` actually arrived — long after `server-start` reported "Ready".
-/// Call this from `main` before handing control to the toolkit.
-pub(crate) fn validate_credentials_at_startup() {
-    let _ = read_validated_private_key();
+/// without this hook a malformed-key misconfiguration would only surface
+/// when an `/invoke` actually arrived — long after `server-start` reported
+/// "Ready". Call this from `main` before handing control to the toolkit;
+/// `main` is the only site permitted to exit the process on error.
+pub(crate) fn validate_credentials_at_startup() -> Result<(), String> {
+    read_validated_private_key().map(|_| ())
 }
 
-/// Read and validate `MEMWAL_DELEGATE_PRIVATE_KEY` at startup.
+/// Read and validate `MEMWAL_DELEGATE_PRIVATE_KEY`.
 ///
-/// - **Set and valid** → returns the hex string.
-/// - **Unset / empty** → returns `None` after a one-shot stderr warning.
-///   The binary continues so `/tools` listing and process liveness still
-///   work; signed calls will fail with `MissingKey`.
-/// - **Set but malformed** → writes a fatal error to stderr and aborts the
-///   process. An explicitly-set-but-broken key is always a misconfiguration;
-///   continuing would mask it behind health checks that look "fine" on the
-///   listing endpoint.
-fn read_validated_private_key() -> Option<String> {
+/// - **Set and valid** → `Ok(Some(hex))`.
+/// - **Unset / empty** → `Ok(None)` after a one-shot warning. The binary
+///   keeps booting so `/tools` listing and process liveness still work;
+///   signed calls fail at signature time with `AuthError::MissingKey`.
+/// - **Set but malformed** → `Err(reason)`. `main` translates this to a
+///   process exit at startup; `from_env` (called per tool boot or per
+///   invocation) downgrades it to an error log + empty key so a single
+///   misconfigured rotate doesn't kill in-flight requests.
+fn read_validated_private_key() -> Result<Option<String>, String> {
     match classify_key(std::env::var(ENV_PRIVATE_KEY).ok().as_deref()) {
-        KeyValidation::Ok(k) => Some(k),
+        KeyValidation::Ok(k) => Ok(Some(k)),
         KeyValidation::Missing => {
             WARN_MISSING_KEY.call_once(|| {
-                eprintln!(
-                    "WARN: {ENV_PRIVATE_KEY} is not set — the memory-memwal \
-                     tools booted, but every signed call and per-tool health \
-                     check will fail with MissingKey until this env var is \
-                     either exported in the process environment or placed in \
-                     a `.env` file in or above the current working directory."
+                log::warn!(
+                    "{ENV_PRIVATE_KEY} is not set — every signed call and \
+                     per-tool health check will fail with MissingKey until \
+                     this env var is exported in the process environment."
                 );
             });
-            None
+            Ok(None)
         }
-        KeyValidation::Invalid(reason) => {
-            eprintln!("FATAL: {ENV_PRIVATE_KEY} {reason}");
-            std::process::exit(1);
-        }
+        KeyValidation::Invalid(reason) => Err(reason),
     }
 }
 
@@ -337,13 +338,23 @@ impl MemWalClient {
     /// production default URL and an empty account id.
     ///
     /// Delegates key handling to [`read_validated_private_key`]: a missing
-    /// key produces a one-shot warning and the binary keeps booting; a key
-    /// that is set but malformed terminates the process.
+    /// key produces a one-shot warning; a key that is set but malformed
+    /// logs an error and continues with an empty key so the first signed
+    /// call surfaces `AuthError::Invalid*` without taking down the
+    /// process. Startup-time validation in `main` is the right place to
+    /// fail fast on misconfiguration.
     pub(crate) fn from_env(server_url_override: Option<String>) -> Self {
         let api_base = server_url_override
             .or_else(|| std::env::var(ENV_SERVER_URL).ok())
             .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
-        let private_key_hex = read_validated_private_key().unwrap_or_default();
+        let private_key_hex = match read_validated_private_key() {
+            Ok(Some(k)) => k,
+            Ok(None) => String::new(),
+            Err(reason) => {
+                log::error!("{ENV_PRIVATE_KEY} {reason}");
+                String::new()
+            }
+        };
         let account_id = std::env::var(ENV_ACCOUNT_ID).unwrap_or_default();
         Self::new(api_base, private_key_hex, account_id)
     }

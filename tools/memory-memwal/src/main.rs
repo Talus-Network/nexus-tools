@@ -55,24 +55,38 @@ mod remember;
 mod remember_bulk;
 mod stats;
 
-#[tokio::main]
-async fn main() {
-    // Pull env vars from a `.env` file (if one exists in cwd or any ancestor)
-    // before reading any env. Existing exports take precedence.
+fn main() {
+    // env_logger is installed before any other startup work so the dotenv
+    // and credential paths emit through `log::{info,warn,error}` instead of
+    // raw stderr. `nexus-toolkit`'s `bootstrap!` also calls `try_init()`,
+    // which is a no-op once a logger is already registered.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
+    // Run `.env` loading and credential validation single-threaded, before
+    // the multi-threaded tokio runtime exists. This keeps the dotenv
+    // `set_var` calls out of any concurrent-read window and lets `main`
+    // own the only `process::exit` site in the binary.
     client::load_dotenv_if_present();
+    if let Err(reason) = client::validate_credentials_at_startup() {
+        log::error!("{} {reason}", client::ENV_PRIVATE_KEY);
+        std::process::exit(1);
+    }
 
-    // `bootstrap!` instantiates each Tool lazily on first request, which would
-    // defer credential validation until the first /invoke. Run it eagerly so a
-    // malformed MEMWAL_DELEGATE_PRIVATE_KEY fails the boot itself.
-    client::validate_credentials_at_startup();
-
-    bootstrap!([
-        remember::RememberMemory,
-        remember_bulk::RememberBulkMemories,
-        recall::RecallMemories,
-        ask::AskMemory,
-        analyze::AnalyzeAndRemember,
-        forget::ForgetMemories,
-        stats::StatsForAccount,
-    ])
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(async {
+            bootstrap!([
+                remember::RememberMemory,
+                remember_bulk::RememberBulkMemories,
+                recall::RecallMemories,
+                ask::AskMemory,
+                analyze::AnalyzeAndRemember,
+                forget::ForgetMemories,
+                stats::StatsForAccount,
+            ])
+        });
 }
