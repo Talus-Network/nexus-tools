@@ -71,7 +71,10 @@ jobs:
           yes "" | sui client new-env --alias tool-register --rpc "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" || true
           sui client switch --env tool-register
 
-          IMPORT=$(sui keytool import "${{ secrets.SUI_DEPLOYER_MNEMONIC }}" ed25519)
+          # SUI_DEPLOYER_PK is a `suiprivkey...` bech32 string (sui keytool
+          # export format). Same secret will drive future onchain Move
+          # deploys (`sui client publish`).
+          IMPORT=$(sui keytool import "${{ secrets.SUI_DEPLOYER_PK }}" ed25519)
           ADDR=$(echo "$IMPORT" | grep -oE '0x[0-9a-fA-F]{64}')
           sui client switch --address "$ADDR"
           echo "DEPLOYER_ADDR=$ADDR" >> "$GITHUB_ENV"
