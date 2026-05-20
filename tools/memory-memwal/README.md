@@ -42,6 +42,8 @@ BIND_ADDR=0.0.0.0:9000 cargo run --package memory-memwal
 
 ## Environment Variables
 
+`.env` files are loaded at startup via [`dotenvy`](https://crates.io/crates/dotenvy).
+
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `MEMWAL_DELEGATE_PRIVATE_KEY` | **yes** | — | Hex-encoded 32-byte Ed25519 (Elliptic Curve Digital Signature Algorithm) delegate private key |

@@ -37,6 +37,28 @@ use {
 /// once per process even though `from_env` runs once per registered tool.
 static WARN_MISSING_KEY: Once = Once::new();
 
+/// Load a `.env` file into the process environment if one is present.
+///
+/// Uses `dotenvy::dotenv()`, which searches starting at the process's current
+/// working directory and walks up the parent chain until it finds a `.env`.
+/// **Existing exports always win** — variables already set in the environment
+/// are not overwritten. This matches the just `server-start` wrapper's
+/// snapshot/restore behavior, so the two paths agree on precedence.
+///
+/// Failure modes:
+/// - No `.env` anywhere on the walk → silent, normal in container deploys
+///   where env vars come from the orchestrator.
+/// - `.env` found but unreadable / malformed → one-line WARN to stderr; boot
+///   continues so missing/invalid `MEMWAL_DELEGATE_PRIVATE_KEY` is still
+///   surfaced by [`validate_credentials_at_startup`].
+pub(crate) fn load_dotenv_if_present() {
+    match dotenvy::dotenv() {
+        Ok(path) => eprintln!("INFO: loaded env vars from {}", path.display()),
+        Err(e) if e.not_found() => {}
+        Err(e) => eprintln!("WARN: failed to load .env: {e}"),
+    }
+}
+
 /// Classification of the delegate key value read from the environment.
 ///
 /// "Valid" means: the hex decodes to exactly 32 bytes — the Ed25519 scalar
@@ -81,16 +103,6 @@ fn classify_key(value: Option<&str>) -> KeyValidation {
     KeyValidation::Ok(raw.to_string())
 }
 
-/// Read and validate `MEMWAL_DELEGATE_PRIVATE_KEY` at startup.
-///
-/// - **Set and valid** → returns the hex string.
-/// - **Unset / empty** → returns `None` after a one-shot stderr warning.
-///   The binary continues so `/tools` listing and process liveness still
-///   work; signed calls will fail with `MissingKey`.
-/// - **Set but malformed** → writes a fatal error to stderr and aborts the
-///   process. An explicitly-set-but-broken key is always a
-///   misconfiguration; continuing would mask it behind health checks that
-///   look "fine" on the listing endpoint.
 /// Run the delegate-key validation eagerly at process startup.
 ///
 /// `bootstrap!` constructs `NexusTool` instances lazily on first request, so
@@ -101,6 +113,16 @@ pub(crate) fn validate_credentials_at_startup() {
     let _ = read_validated_private_key();
 }
 
+/// Read and validate `MEMWAL_DELEGATE_PRIVATE_KEY` at startup.
+///
+/// - **Set and valid** → returns the hex string.
+/// - **Unset / empty** → returns `None` after a one-shot stderr warning.
+///   The binary continues so `/tools` listing and process liveness still
+///   work; signed calls will fail with `MissingKey`.
+/// - **Set but malformed** → writes a fatal error to stderr and aborts the
+///   process. An explicitly-set-but-broken key is always a misconfiguration;
+///   continuing would mask it behind health checks that look "fine" on the
+///   listing endpoint.
 fn read_validated_private_key() -> Option<String> {
     match classify_key(std::env::var(ENV_PRIVATE_KEY).ok().as_deref()) {
         KeyValidation::Ok(k) => Some(k),
@@ -108,10 +130,10 @@ fn read_validated_private_key() -> Option<String> {
             WARN_MISSING_KEY.call_once(|| {
                 eprintln!(
                     "WARN: {ENV_PRIVATE_KEY} is not set — the memory-memwal \
-                     tools booted, but every signed call (remember, recall, \
-                     ask, analyze) and per-tool health check will fail with \
-                     MissingKey until this env var is provided. See \
-                     tools/memory-memwal/.env.example for details."
+                     tools booted, but every signed call and per-tool health \
+                     check will fail with MissingKey until this env var is \
+                     either exported in the process environment or placed in \
+                     a `.env` file in or above the current working directory."
                 );
             });
             None

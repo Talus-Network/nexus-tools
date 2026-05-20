@@ -20,19 +20,23 @@
 //! - `ForgetMemories`       — delete every memory in a namespace
 //! - `StatsForAccount`      — count + stored bytes for a namespace
 //!
-//! ## Required environment variables
+//! ## Environment configuration
+//!
+//! `.env` files are loaded at startup via [`dotenvy`].
+//!
+//! ### Required
 //!
 //! | Variable | Description |
 //! |---|---|
 //! | `MEMWAL_DELEGATE_PRIVATE_KEY` | Hex-encoded 32-byte Ed25519 delegate private key |
 //!
-//! ## Recommended environment variables
+//! ### Recommended
 //!
 //! | Variable | Description |
 //! |---|---|
 //! | `MEMWAL_ACCOUNT_ID` | MemWal account object ID (`0x…`). Sent as `x-account-id` and embedded in the signed message — matches the JS SDK 1:1 and skips the on-chain registry scan. |
 //!
-//! ## Optional environment variables
+//! ### Optional
 //!
 //! | Variable | Default | Description |
 //! |---|---|---|
@@ -53,6 +57,10 @@ mod stats;
 
 #[tokio::main]
 async fn main() {
+    // Pull env vars from a `.env` file (if one exists in cwd or any ancestor)
+    // before reading any env. Existing exports take precedence.
+    client::load_dotenv_if_present();
+
     // `bootstrap!` instantiates each Tool lazily on first request, which would
     // defer credential validation until the first /invoke. Run it eagerly so a
     // malformed MEMWAL_DELEGATE_PRIVATE_KEY fails the boot itself.
