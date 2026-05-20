@@ -1,0 +1,62 @@
+name: Offchain Tools Readiness
+
+on:
+  workflow_call:
+    inputs:
+      matrix-json:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    name: "Readiness ${{ matrix.tool }} v${{ matrix.version }}"
+    runs-on: ubuntu-latest
+    environment: >-
+      ${{
+        (github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        'testnet'
+      }}
+    strategy:
+      matrix: ${{ fromJson(inputs.matrix-json) }}
+      fail-fast: false
+    steps:
+      - name: Authenticate to GCP (protocol)
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools-protocol
+
+      - name: Check GCS artifacts
+        run: |
+          set -euo pipefail
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+          TOOL="${{ matrix.tool }}"
+          VERSION="${{ matrix.version }}"
+          VERSIONED="${TOOL}-v${VERSION}"
+
+          MISSING=()
+
+          CFG="gs://${BUCKET}/${NETWORK}/offchain/tools/${VERSIONED}.json"
+          gsutil -q stat "$CFG" 2>/dev/null || MISSING+=("Cloud Run config: $CFG")
+
+          REG_DIR="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/"
+          REG_COUNT=$(gsutil ls "$REG_DIR" 2>/dev/null | wc -l || echo 0)
+          if [ "$REG_COUNT" = "0" ]; then
+            MISSING+=("FQN registrations under $REG_DIR")
+          fi
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Missing artifacts for ${VERSIONED}:"
+            for m in "${MISSING[@]}"; do echo "  - $m"; done
+            echo ""
+            echo "Trigger the Offchain Tools publish workflow with this PR number to seed them."
+            exit 1
+          fi
+
+          echo "✓ All artifacts present for ${VERSIONED}"
