@@ -23,8 +23,11 @@ runs:
       with:
         project_id: ${{ inputs.project-id }}
         workload_identity_provider: "projects/${{ inputs.project-number }}/locations/global/workloadIdentityPools/${{ inputs.project-id }}/providers/${{ inputs.provider-name }}"
-        create_credentials_file: false
-        token_format: 'access_token'
+        # No service_account / token_format — use Direct WIF.
+        # google-github-actions/auth exposes the federated token via
+        # `auth_token` output, which docker/login-action consumes below.
+        # `token_format: 'access_token'` would require a service_account
+        # to impersonate, which we don't have for this WIF setup.
 
     - name: Login to GCR
       uses: docker/login-action@v3
