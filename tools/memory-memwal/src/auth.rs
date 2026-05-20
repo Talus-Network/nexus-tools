@@ -27,6 +27,7 @@ use {
     ed25519_dalek::{Signer, SigningKey},
     sha2::{Digest, Sha256},
     std::time::{SystemTime, UNIX_EPOCH},
+    zeroize::{Zeroize, Zeroizing},
 };
 
 /// Headers produced by [`sign_request`].
@@ -47,11 +48,19 @@ pub(crate) fn parse_signing_key(private_key_hex: &str) -> Result<(SigningKey, St
     if private_key_hex.is_empty() {
         return Err(AuthError::MissingKey);
     }
-    let raw: Vec<u8> = hex::decode(private_key_hex)?;
-    let key_bytes: [u8; 32] = raw
-        .try_into()
-        .map_err(|v: Vec<u8>| AuthError::InvalidKeyLength(v.len()))?;
+    // `Zeroizing<Vec<u8>>` zeroes the heap buffer when dropped. Without it
+    // the secret bytes would linger in unused heap until the allocator
+    // reuses them — a core dump captured before that point recovers the key.
+    let raw: Zeroizing<Vec<u8>> = Zeroizing::new(hex::decode(private_key_hex)?);
+    if raw.len() != 32 {
+        return Err(AuthError::InvalidKeyLength(raw.len()));
+    }
+    let mut key_bytes: [u8; 32] = [0u8; 32];
+    key_bytes.copy_from_slice(&raw);
     let signing_key = SigningKey::from_bytes(&key_bytes);
+    // SigningKey is ZeroizeOnDrop; the stack copy here is not. Explicit
+    // zeroize closes the window between `from_bytes` and stack unwinding.
+    key_bytes.zeroize();
     let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
     Ok((signing_key, public_key_hex))
 }

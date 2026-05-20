@@ -37,6 +37,7 @@ use {
     },
     tokio::time::{sleep, Instant},
     url::Url,
+    zeroize::Zeroizing,
 };
 
 /// One-shot guard so the "missing delegate key" warning is emitted at most
@@ -84,15 +85,41 @@ pub(crate) fn load_dotenv_if_present() {
 /// we can do client-side. The relayer additionally verifies that the
 /// derived public key is registered on chain as a delegate for a MemWal
 /// account — that authority check can only happen server-side.
-#[derive(Debug, PartialEq, Eq)]
+/// Classification result with a hand-written `Debug` impl that redacts the
+/// secret hex in the `Ok` variant. Auto-deriving `Debug` would let any
+/// future `{:?}` print dump the delegate key into a log line or panic
+/// message; this impl makes that impossible by construction.
 enum KeyValidation {
-    /// Key is set and decodes to 32 bytes. Carries the original hex string.
-    Ok(String),
+    /// Key is set and decodes to 32 bytes. Carries the original hex string
+    /// wrapped in `Zeroizing` so the heap buffer is wiped on drop.
+    Ok(Zeroizing<String>),
     /// Env var is unset or empty. Boot continues; signed calls will fail.
     Missing,
     /// Env var is set but malformed. Carries an operator-facing reason.
     Invalid(String),
 }
+
+impl std::fmt::Debug for KeyValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok(_) => write!(f, "Ok(<redacted>)"),
+            Self::Missing => write!(f, "Missing"),
+            Self::Invalid(reason) => f.debug_tuple("Invalid").field(reason).finish(),
+        }
+    }
+}
+
+impl PartialEq for KeyValidation {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ok(a), Self::Ok(b)) => a.as_str() == b.as_str(),
+            (Self::Missing, Self::Missing) => true,
+            (Self::Invalid(a), Self::Invalid(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for KeyValidation {}
 
 /// Pure classifier — no I/O, no exits, deterministic. Side effects live in
 /// [`read_validated_private_key`].
@@ -116,7 +143,7 @@ fn classify_key(value: Option<&str>) -> KeyValidation {
             bytes.len()
         ));
     }
-    KeyValidation::Ok(raw.to_string())
+    KeyValidation::Ok(Zeroizing::new(raw.to_string()))
 }
 
 /// Run the delegate-key validation eagerly at process startup.
@@ -140,8 +167,13 @@ pub(crate) fn validate_credentials_at_startup() -> Result<(), String> {
 ///   process exit at startup; `from_env` (called per tool boot or per
 ///   invocation) downgrades it to an error log + empty key so a single
 ///   misconfigured rotate doesn't kill in-flight requests.
-fn read_validated_private_key() -> Result<Option<String>, String> {
-    match classify_key(std::env::var(ENV_PRIVATE_KEY).ok().as_deref()) {
+fn read_validated_private_key() -> Result<Option<Zeroizing<String>>, String> {
+    // `env::var` returns a fresh `String` — wrap it immediately so that
+    // intermediate copy is also zeroed on drop.
+    let raw = std::env::var(ENV_PRIVATE_KEY)
+        .ok()
+        .map(Zeroizing::new);
+    match classify_key(raw.as_deref().map(|z| z.as_str())) {
         KeyValidation::Ok(k) => Ok(Some(k)),
         KeyValidation::Missing => {
             WARN_MISSING_KEY.call_once(|| {
@@ -267,6 +299,14 @@ pub(crate) const MAX_TEXT_BYTES: usize = 1 << 20; // 1 MiB
 /// limits (so callers can back off intelligently) from generic upstream
 /// failures (where the full body is logged structurally but only a terse
 /// status family is surfaced to the unauthenticated /invoke caller).
+///
+/// **Logging sensitivity:** the body snippet logged under
+/// `target = "memwal::upstream"` can contain account hints, moderation
+/// messages quoting stored memory text, or other relayer internals. The
+/// snippet is capped at 256 chars but is NOT redacted. Operators who treat
+/// their log files as a lower-trust channel than the binary itself should
+/// filter via `RUST_LOG=memwal::upstream=off` (or `=error`) and rely on
+/// the terse client-facing error returned below.
 async fn map_error_response(resp: reqwest::Response) -> MemWalError {
     let status = resp.status();
     if status.as_u16() == 429 {
@@ -462,8 +502,13 @@ fn allow_insecure() -> bool {
 ///   otherwise concatenate them with the per-call path and silently rewrite
 ///   the signed message's path segment.
 fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
+    // Don't echo the raw URL in the parse-failure message: an operator who
+    // accidentally embedded credentials (`https://user:secret@host/...`)
+    // and then mistyped the rest would otherwise leak them into stderr,
+    // log files, and (because each tool's `new()` panics on Config) into
+    // the panic message itself.
     let url = Url::parse(raw)
-        .map_err(|e| MemWalError::Config(format!("invalid relayer URL `{raw}`: {e}")))?;
+        .map_err(|e| MemWalError::Config(format!("invalid relayer URL: {e}")))?;
     let scheme = url.scheme();
     let scheme_ok = scheme == "https" || (allow_insecure() && scheme == "http");
     if !scheme_ok {
@@ -480,6 +525,15 @@ fn parse_relayer_url(raw: &str) -> Result<Url, MemWalError> {
     if url.query().is_some() || url.fragment().is_some() {
         return Err(MemWalError::Config(
             "relayer URL must not carry a query or fragment".into(),
+        ));
+    }
+    if url.username() != "" || url.password().is_some() {
+        // Userinfo in a relayer URL is almost certainly a configuration
+        // mistake (the relayer authenticates via signed headers, not basic
+        // auth). Refuse it rather than letting it tag along on every
+        // outbound request.
+        return Err(MemWalError::Config(
+            "relayer URL must not embed credentials (userinfo)".into(),
         ));
     }
     Ok(url)
@@ -1077,7 +1131,7 @@ mod tests {
     fn classify_key_ok_on_valid_32_byte_hex() {
         let key = hex::encode([0x42u8; 32]);
         match classify_key(Some(&key)) {
-            KeyValidation::Ok(returned) => assert_eq!(returned, key),
+            KeyValidation::Ok(returned) => assert_eq!(returned.as_str(), key.as_str()),
             other => panic!("expected Ok(\"{key}\"), got {other:?}"),
         }
     }
@@ -1139,7 +1193,7 @@ mod tests {
     #[test]
     fn classify_key_ok_on_all_ones_32_bytes() {
         let key = hex::encode([0xffu8; 32]);
-        assert_eq!(classify_key(Some(&key)), KeyValidation::Ok(key));
+        assert_eq!(classify_key(Some(&key)), KeyValidation::Ok(Zeroizing::new(key)));
     }
 
     fn make_client(server_url: &str) -> MemWalClient {
