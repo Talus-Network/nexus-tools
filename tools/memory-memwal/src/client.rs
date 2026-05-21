@@ -181,6 +181,19 @@ fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(POLL_MAX)
 }
 
+/// Add 0..25% positive jitter to `delay` so concurrent polls of the same
+/// job (e.g. two clients waiting on a shared job_id) don't lock-step on the
+/// exact 100/200/400 ms ticks. Entropy comes from the system clock's
+/// sub-second nanoseconds — adequate for spreading-out, not for security.
+fn jittered(delay: Duration) -> Duration {
+    let jitter_ms = (delay.as_millis() as u64 / 4).max(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    delay + Duration::from_millis(nanos % jitter_ms)
+}
+
 fn check_text_len(field: &str, value: &str) -> Result<(), MemWalError> {
     if value.len() > MAX_TEXT_BYTES {
         return Err(MemWalError::Config(format!(
@@ -627,7 +640,7 @@ impl MemWalClient {
         let mut delay = POLL_INITIAL;
 
         loop {
-            sleep(delay).await;
+            sleep(jittered(delay)).await;
             let status: JobStatusResponse = self.get(&path).await?.json().await?;
             match status.status {
                 JobStatus::Done => {
@@ -834,7 +847,7 @@ impl MemWalClient {
                 break;
             }
 
-            sleep(delay).await;
+            sleep(jittered(delay)).await;
             let statuses = self.poll_bulk_status_once(&pending).await?;
             let by_id: HashMap<&str, &BulkStatusItem> =
                 statuses.iter().map(|s| (s.job_id.as_str(), s)).collect();
@@ -1091,6 +1104,33 @@ mod tests {
         assert_ne!(v_ok, v_missing);
         assert_ne!(v_ok, v_invalid);
         assert_ne!(v_missing, v_invalid);
+    }
+
+    /// `jittered(delay)` returns a value in `[delay, delay + ceil(delay/4))`.
+    /// Failure mode caught: a regression that overshoots the 25% jitter cap
+    /// would silently extend the polling deadline, or a missing-jitter
+    /// regression (returning exactly `delay`) would re-introduce lock-step
+    /// polling between concurrent clients on the same job.
+    #[test]
+    fn jittered_bounded() {
+        for d_ms in [100u64, 250, 500, 1000, 4000] {
+            let d = Duration::from_millis(d_ms);
+            // The function isn't deterministic, but a small batch will
+            // exercise enough nanosecond values to expose an out-of-range
+            // result.
+            for _ in 0..50 {
+                let got = jittered(d);
+                assert!(
+                    got >= d,
+                    "jittered({d:?}) returned {got:?}, less than the base delay"
+                );
+                let max_jitter = Duration::from_millis((d_ms / 4).max(1));
+                assert!(
+                    got < d + max_jitter,
+                    "jittered({d:?}) returned {got:?}, exceeded base + 25%"
+                );
+            }
+        }
     }
 
     /// `check_text_len` accepts an input exactly at the cap, rejects one
