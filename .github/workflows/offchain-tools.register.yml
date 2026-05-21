@@ -153,12 +153,19 @@ jobs:
 
               STDERR_LOG="${RUNNER_TEMP}/nexus-register.stderr"
               set +e
+              # The PTB creates Tool + ToolGas + two OwnerCaps with
+              # embedded description + input/output schemas. Storage cost
+              # at ~7600 MIST/byte easily exceeds the CLI's 100M default
+              # budget, surfacing as `InsufficientGas in command: None`
+              # at execution time (post-reservation). 500M leaves comfy
+              # headroom; wallet coins are sized accordingly.
               OUT=$(echo "$TOOL_META" \
                 | nexus tool register offchain \
                     --from-meta - \
                     --url "$TOOL_URL" \
                     --sui-gas-coin "$GAS_COIN" \
                     --collateral-coin "$COLL_COIN" \
+                    --sui-gas-budget 500000000 \
                     --invocation-cost 0 \
                     --no-save \
                     --json 2>"$STDERR_LOG")
