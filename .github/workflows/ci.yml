@@ -177,37 +177,18 @@ jobs:
             exit 1
           fi
 
+      # Polls actions:read endpoints only — works with fine-grained PATs.
+      # `gh run watch` would also fetch check annotations (checks:read),
+      # which fine-grained PATs cannot carry. ava-game uses the same
+      # action for the same reason.
       - name: Dispatch tf-nexus-tools terraform apply and wait
-        run: |
-          set -euo pipefail
-          DISPATCH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          gh workflow run terraform.yml \
-            --repo Talus-Network/tf-nexus-tools \
-            --ref production
-
-          # Find the run we just dispatched. `gh workflow run` returns no
-          # ID, so poll for the most recent workflow_dispatch run on
-          # terraform.yml whose createdAt is at or after our dispatch.
-          RUN_ID=""
-          for i in $(seq 1 24); do
-            RUN_ID=$(gh run list \
-              --repo Talus-Network/tf-nexus-tools \
-              --workflow terraform.yml \
-              --limit 10 \
-              --json databaseId,createdAt,event \
-              --jq "[.[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$DISPATCH_TIME\")] | first | .databaseId // empty")
-            if [ -n "$RUN_ID" ]; then
-              break
-            fi
-            echo "Run not visible yet (attempt $i), retrying in 5s..."
-            sleep 5
-          done
-          if [ -z "$RUN_ID" ]; then
-            echo "::error::Could not find dispatched terraform.yml run after 2 minutes"
-            exit 1
-          fi
-          echo "Watching tf-nexus-tools run $RUN_ID"
-          gh run watch "$RUN_ID" --repo Talus-Network/tf-nexus-tools --exit-status
+        uses: the-actions-org/workflow-dispatch@v4.0.0
+        with:
+          repo: Talus-Network/tf-nexus-tools
+          ref: production
+          workflow: Terraform
+          token: ${{ secrets.GH_ACCESS_TOKEN }}
+          inputs: '{}'
 
   # ── ci-gate: single required status check for branch protection ──
   ci-gate:
