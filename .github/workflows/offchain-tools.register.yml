@@ -93,6 +93,42 @@ jobs:
             --sui.rpc-url "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" \
             --sui.pk "$SUI_PK"
 
+      - name: Consolidate wallet gas coins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Merge most coins into one big primary so the register loop
+          # has enough headroom for budgets up to ~1 SUI per call
+          # (static deploy needed 1e9 MIST for heavy twitter schemas).
+          # Leaves a tiny leftover so we still have a distinct
+          # collateral coin per call.
+          echo "::group::wallet before consolidation"
+          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          echo "::endgroup::"
+
+          # Target 4 coins so we have headroom for several register
+          # calls in parallel and across drain. Merge the two smallest
+          # each iteration; this levels small fragments up rather than
+          # leaving 1 huge + 3 small (which can't cover the 1 SUI
+          # budget for heavy schemas).
+          MAX_MERGES=40
+          i=0
+          while [ "$(sui client gas --json | jq 'length')" -gt 4 ] && [ "$i" -lt "$MAX_MERGES" ]; do
+            INFO=$(sui client gas --json)
+            TO_MERGE=$(echo "$INFO" | jq -r 'sort_by(.mistBalance|tonumber) | .[0].gasCoinId')
+            PRIMARY=$(echo "$INFO"  | jq -r 'sort_by(.mistBalance|tonumber) | .[1].gasCoinId')
+            echo "merge[$i]: $TO_MERGE -> $PRIMARY"
+            sui client merge-coin \
+              --primary-coin "$PRIMARY" \
+              --coin-to-merge "$TO_MERGE" \
+              --gas-budget 5000000 >/dev/null
+            i=$((i+1))
+          done
+
+          echo "::group::wallet after consolidation"
+          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          echo "::endgroup::"
+
       - name: Register offchain tools
         shell: bash
         run: |
@@ -134,15 +170,25 @@ jobs:
               echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
               echo "$GAS_INFO" | jq 'length as $n | (map(.mistBalance|tonumber) | add) as $sum | {coin_count: $n, total_mist: $sum, total_sui: ($sum/1000000000)}'
               echo "::endgroup::"
+              GAS_BUDGET=1000000000
               GAS_COIN=$(echo "$GAS_INFO" | jq -r 'sort_by(.mistBalance|tonumber) | last.gasCoinId')
               GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
               COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
                 'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId')
               COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
-              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST)"
+              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST) budget=$GAS_BUDGET"
               if [ -z "$GAS_COIN" ] || [ "$GAS_COIN" = "null" ] \
                  || [ -z "$COLL_COIN" ] || [ "$COLL_COIN" = "null" ]; then
                 echo "::error::Wallet must have ≥2 SUI coins"
+                exit 1
+              fi
+              # Sui rejects the tx at validation if the gas coin's
+              # balance is below the budget reservation. Fail loudly
+              # here with a clear "wallet drained" message instead of
+              # an opaque RPC error.
+              if [ "$GAS_BAL" -lt "$GAS_BUDGET" ]; then
+                echo "::error::Largest coin $GAS_COIN has $GAS_BAL MIST, below budget $GAS_BUDGET. Wallet drained — top-up or re-consolidate."
+                echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
                 exit 1
               fi
 
@@ -153,19 +199,18 @@ jobs:
 
               STDERR_LOG="${RUNNER_TEMP}/nexus-register.stderr"
               set +e
-              # The PTB creates Tool + ToolGas + two OwnerCaps with
-              # embedded description + input/output schemas. Storage cost
-              # at ~7600 MIST/byte easily exceeds the CLI's 100M default
-              # budget, surfacing as `InsufficientGas in command: None`
-              # at execution time (post-reservation). 500M leaves comfy
-              # headroom; wallet coins are sized accordingly.
+              # Heavy schemas (twitter get-tweet, llm chat-completion)
+              # need ~1 SUI of gas to cover storage; the proven value
+              # from the prior static deploy
+              # (tf-talus-nexus-v2 social-twitter.json:gasBudgetAmount).
+              # Pre-consolidated wallet coins (above) cover this.
               OUT=$(echo "$TOOL_META" \
                 | nexus tool register offchain \
                     --from-meta - \
                     --url "$TOOL_URL" \
                     --sui-gas-coin "$GAS_COIN" \
                     --collateral-coin "$COLL_COIN" \
-                    --sui-gas-budget 500000000 \
+                    --sui-gas-budget "$GAS_BUDGET" \
                     --invocation-cost 0 \
                     --no-save \
                     --json 2>"$STDERR_LOG")
