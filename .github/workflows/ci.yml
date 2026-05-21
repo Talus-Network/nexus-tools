@@ -157,23 +157,12 @@ jobs:
       matrix-json: ${{ needs.discover.outputs.matrix-changed }}
     secrets: inherit
 
-  # ── Retrigger PR after dispatched run (flips readiness green) ──
-  retrigger-pr:
-    needs: [register, resolve-target]
-    if: always() && !cancelled() && needs.register.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ./.github/actions/retrigger-pr
-        with:
-          pr-number: ${{ inputs.pr-number }}
-          gpg-signing-key: ${{ secrets.GPG_DEVOPS_SIGNING_KEY }}
-          github-token: ${{ github.token }}
-
   # ── Trigger tf-nexus-tools apply (reconcile Cloud Run from GCS state) ──
   # After register has written the new tool's config blob + on-chain entry,
   # kick the terraform stack so Cloud Run services / ALB / DNS records get
-  # materialized. Uses the org-level GH_ACCESS_TOKEN PAT (same pattern as
-  # ava-game) because GITHUB_TOKEN cannot dispatch workflows in other repos.
+  # materialized. We wait for the dispatched run to complete and inherit
+  # its conclusion, so register-then-apply is one atomic gate. Uses
+  # GH_ACCESS_TOKEN PAT because GITHUB_TOKEN can't dispatch in other repos.
   trigger-tf-apply:
     needs: [register]
     if: always() && !cancelled() && needs.register.result == 'success'
@@ -188,11 +177,37 @@ jobs:
             exit 1
           fi
 
-      - name: Dispatch tf-nexus-tools terraform apply
+      - name: Dispatch tf-nexus-tools terraform apply and wait
         run: |
+          set -euo pipefail
+          DISPATCH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           gh workflow run terraform.yml \
             --repo Talus-Network/tf-nexus-tools \
             --ref production
+
+          # Find the run we just dispatched. `gh workflow run` returns no
+          # ID, so poll for the most recent workflow_dispatch run on
+          # terraform.yml whose createdAt is at or after our dispatch.
+          RUN_ID=""
+          for i in $(seq 1 24); do
+            RUN_ID=$(gh run list \
+              --repo Talus-Network/tf-nexus-tools \
+              --workflow terraform.yml \
+              --limit 10 \
+              --json databaseId,createdAt,event \
+              --jq "[.[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$DISPATCH_TIME\")] | first | .databaseId // empty")
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+            echo "Run not visible yet (attempt $i), retrying in 5s..."
+            sleep 5
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Could not find dispatched terraform.yml run after 2 minutes"
+            exit 1
+          fi
+          echo "Watching tf-nexus-tools run $RUN_ID"
+          gh run watch "$RUN_ID" --repo Talus-Network/tf-nexus-tools --exit-status
 
   # ── ci-gate: single required status check for branch protection ──
   ci-gate:
