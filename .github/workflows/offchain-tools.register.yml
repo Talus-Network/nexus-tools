@@ -147,16 +147,30 @@ jobs:
               exit 1
             fi
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
-            TOOL_URL="http://${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
-            echo "=== TOOL=$TOOL VERSION=$VERSION URL=$TOOL_URL ==="
+            TOOL_HOST="${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+            echo "=== TOOL=$TOOL VERSION=$VERSION HOST=$TOOL_HOST ==="
 
             # Each tool binary's --meta emits an array of ToolMeta (one per
             # FQN). The CLI's --from-meta takes a single ToolMeta on stdin,
-            # so iterate and pipe each entry. --url overrides the URL baked
-            # into the meta (which points at the in-container BIND_ADDR).
+            # so iterate and pipe each entry. Each FQN has its own URL
+            # *path* (e.g. /i64/add/) baked into the meta — we keep that
+            # path and only swap the host from the in-container BIND_ADDR
+            # to the external internal-DNS hostname.
             jq -c '.[]' "$META" | while read -r TOOL_META; do
               FQN=$(echo "$TOOL_META" | jq -r '.fqn')
               REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+
+              META_URL=$(echo "$TOOL_META" | jq -r '.url')
+              # Strip scheme + host:port, keep the path (defaulting to /).
+              URL_PATH=$(echo "$META_URL" | sed -E 's|^[a-z]+://[^/]*||')
+              [ -z "$URL_PATH" ] && URL_PATH="/"
+              # Leader appends `invoke` via RFC 3986 relative-URL join:
+              #   /i64/add/  + invoke = /i64/add/invoke ✓
+              #   /i64/add   + invoke = /invoke        ✗
+              # Force a trailing slash so the join produces the right
+              # endpoint, matching the legacy v0.8 static-deploy URLs.
+              [ "${URL_PATH: -1}" != "/" ] && URL_PATH="${URL_PATH}/"
+              TOOL_URL="http://${TOOL_HOST}${URL_PATH}"
 
               # The CLI's gas pool is a single coin picked at startup
               # (sui.rs:294 `with_gas(vec![one_coin])`); reusing the same
