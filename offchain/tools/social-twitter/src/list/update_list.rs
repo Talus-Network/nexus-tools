@@ -61,7 +61,10 @@ impl NexusTool for UpdateList {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!(concat!("xyz.taluslabs.social.twitter.update-list@", env!("TOOL_FQN_VERSION")))
+        fqn!(concat!(
+            "xyz.taluslabs.social.twitter.update-list@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

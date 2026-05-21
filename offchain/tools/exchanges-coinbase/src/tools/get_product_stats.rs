@@ -81,7 +81,10 @@ impl NexusTool for GetProductStats {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!(concat!("xyz.taluslabs.exchanges.coinbase.get-product-stats@", env!("TOOL_FQN_VERSION")))
+        fqn!(concat!(
+            "xyz.taluslabs.exchanges.coinbase.get-product-stats@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
