@@ -93,115 +93,73 @@ jobs:
             --sui.rpc-url "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" \
             --sui.pk "$SUI_PK"
 
-      - name: Load Nexus objects
-        run: |
-          set -euo pipefail
-          WORKFLOW_PKG=$(grep '^workflow_pkg_id' "$RUNNER_TEMP/objects.toml" | cut -d'"' -f2)
-          TOOL_REGISTRY=$(grep -A1 '^\[tool_registry\]' "$RUNNER_TEMP/objects.toml" | grep 'object_id' | cut -d'"' -f2)
-          GAS_SERVICE=$(grep -A1 '^\[gas_service\]' "$RUNNER_TEMP/objects.toml" | grep 'object_id' | cut -d'"' -f2)
-          echo "WORKFLOW_PKG=$WORKFLOW_PKG" >> "$GITHUB_ENV"
-          echo "TOOL_REGISTRY=$TOOL_REGISTRY" >> "$GITHUB_ENV"
-          echo "GAS_SERVICE=$GAS_SERVICE" >> "$GITHUB_ENV"
-
       - name: Register offchain tools
         shell: bash
         run: |
           set -euo pipefail
-          # Verbose tracing so a silent set -e exit reveals which command fired.
-          set -x
 
           MANIFEST="${{ steps.artifacts.outputs.manifest }}"
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
           NETWORK="${{ vars.SUI_NETWORK }}"
 
-          echo "=== Prepare artifact contents ==="
-          ls -la "$(dirname "$MANIFEST")" || true
-          ls -la "$META_DIR" || true
-          echo "=== Manifest ==="
-          cat "$MANIFEST"
-          echo "=== End manifest ==="
-
-          REGISTERED=$(nexus tool list --json 2>/dev/null | jq -r '.[].fqn' 2>/dev/null || true)
-          echo "::group::Already registered"; echo "$REGISTERED"; echo "::endgroup::"
-
-          # Empty input would trip pipefail via `grep '0x'` finding no match,
-          # killing the script silently inside a $() assignment. Short-circuit
-          # so empty input produces empty output (=> Move `vector[]`).
-          to_bytes() {
-            [ -z "${1:-}" ] && return 0
-            printf '%s' "$1" | xxd -i -c 9999 | grep '0x' | tr -d ' \n' | sed 's/,$//'
-          }
-          COIN_ID=$(sui client gas --json | jq -r '.[0].gasCoinId')
-          echo "Using coin: $COIN_ID"
-
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
-            echo "=== Processing TOOL=$TOOL ==="
             META="${META_DIR}/${TOOL}.json"
             if [ ! -f "$META" ]; then
-              echo "::error::Meta file not found: $META (META_DIR contents:)"
+              echo "::error::Meta file not found: $META"
               ls -la "$META_DIR" >&2 || true
               exit 1
             fi
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
-            COUNT=$(jq 'length' "$META")
-            echo "  TOOL=$TOOL VERSION=$VERSION COUNT=$COUNT META=$META"
-            for i in $(seq 0 $((COUNT - 1))); do
-              FQN=$(jq -r ".[$i].fqn" "$META")
-              TOOL_URL="http://${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+            TOOL_URL="http://${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+            echo "=== TOOL=$TOOL VERSION=$VERSION URL=$TOOL_URL ==="
 
-              if echo "$REGISTERED" | grep -qF "$FQN"; then
-                echo "  ✓ $FQN already registered, skipping"
+            # Each tool binary's --meta emits an array of ToolMeta (one per
+            # FQN). The CLI's --from-meta takes a single ToolMeta on stdin,
+            # so iterate and pipe each entry. --url overrides the URL baked
+            # into the meta (which points at the in-container BIND_ADDR).
+            jq -c '.[]' "$META" | while read -r TOOL_META; do
+              FQN=$(echo "$TOOL_META" | jq -r '.fqn')
+              REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+
+              OUT=$(echo "$TOOL_META" \
+                | nexus tool register offchain \
+                    --from-meta - \
+                    --url "$TOOL_URL" \
+                    --invocation-cost 0 \
+                    --no-save \
+                    --json)
+
+              ENTRY=$(echo "$OUT" | jq -c '.[0]')
+              ALREADY=$(echo "$ENTRY" | jq -r '.already_registered // false')
+
+              if [ "$ALREADY" = "true" ]; then
+                # Caps must already exist in GCS from a prior run; refusing
+                # to proceed when they're missing keeps downstream steps
+                # (signing keys, toolkit-config) from running blind.
+                if ! gsutil -q stat "$REG_PATH" 2>/dev/null; then
+                  echo "::error::$FQN registered on-chain but no caps in GCS ($REG_PATH)"
+                  exit 1
+                fi
+                echo "  ✓ $FQN already registered — caps preserved"
                 continue
               fi
 
-              DESC=$(jq -r ".[$i].description" "$META")
-              TIMEOUT=$(jq -r ".[$i].timeout" "$META")
-              INPUT_SCHEMA=$(jq -c ".[$i].input_schema" "$META")
-              OUTPUT_SCHEMA=$(jq -c ".[$i].output_schema" "$META")
-
-              FQN_VEC="vector[$(to_bytes "$FQN")]"
-              URL_VEC="vector[$(to_bytes "$TOOL_URL")]"
-              DESC_VEC="vector[$(to_bytes "$DESC")]"
-              IN_VEC="vector[$(to_bytes "$INPUT_SCHEMA")]"
-              OUT_VEC="vector[$(to_bytes "$OUTPUT_SCHEMA")]"
-
-              PTB_ARGS="\
-                --move-call 0x1::ascii::string \"${FQN_VEC}\" \
-                --assign fqn \
-                --move-call ${WORKFLOW_PKG}::tool_registry::register_off_chain_tool \
-                  @${TOOL_REGISTRY} fqn \
-                  \"${URL_VEC}\" \"${DESC_VEC}\" \"${IN_VEC}\" \"${OUT_VEC}\" \
-                  ${TIMEOUT}u64 @${COIN_ID} @0x6 \
-                --assign r \
-                --move-call ${WORKFLOW_PKG}::gas::deescalate r.0 r.1 \
-                --assign g \
-                --move-call ${WORKFLOW_PKG}::gas::create_tool_gas_and_share \
-                  @${GAS_SERVICE} r.0 g 0u64 \
-                --move-call 0x2::transfer::public_share_object \
-                  \"<${WORKFLOW_PKG}::tool_registry::Tool>\" r.0 \
-                --transfer-objects \"[r.1, g]\" @${DEPLOYER_ADDR} \
-                --gas-budget 100000000 \
-                --json"
-
-              OUT=$(eval "sui client ptb $PTB_ARGS")
-              STATUS=$(echo "$OUT" | jq -r '.effects.status.status')
-              if [ "$STATUS" != "success" ]; then
-                echo "::error::PTB failed for $FQN"
-                echo "$OUT" | jq '.effects.status'
+              TOOL_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_tool_id // empty')
+              GAS_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_gas_id // empty')
+              if [ -z "$TOOL_CAP" ] || [ -z "$GAS_CAP" ]; then
+                echo "::error::register output missing caps for $FQN: $ENTRY"
                 exit 1
               fi
 
-              CAP_ID=$(echo "$OUT" | jq -r '[.objectChanges[] | select(.objectType | test("OverTool")) | .objectId] | .[0]')
-              if [ -z "$CAP_ID" ] || [ "$CAP_ID" = "null" ]; then
-                echo "::error::No OwnerCap<OverTool> for $FQN"
-                exit 1
-              fi
-
-              jq -n --arg fqn "$FQN" --arg cap "$CAP_ID" \
-                '{fqn: $fqn, owner_cap_over_tool: $cap}' \
-                | gsutil cp - "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
-              echo "  + $FQN registered (cap=$CAP_ID)"
+              # Merge with any existing record so downstream-added fields
+              # (signing_key_hash, tool_kid) survive re-registration.
+              EXISTING=$(gsutil cat "$REG_PATH" 2>/dev/null || echo '{}')
+              echo "$EXISTING" | jq \
+                --arg fqn "$FQN" --arg t "$TOOL_CAP" --arg g "$GAS_CAP" \
+                '. + {fqn: $fqn, owner_cap_over_tool: $t, owner_cap_over_gas: $g}' \
+                | gsutil cp - "$REG_PATH"
+              echo "  + $FQN registered (tool_cap=$TOOL_CAP gas_cap=$GAS_CAP)"
             done
           done
 
