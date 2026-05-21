@@ -171,26 +171,33 @@ jobs:
               echo "$GAS_INFO" | jq 'length as $n | (map(.mistBalance|tonumber) | add) as $sum | {coin_count: $n, total_mist: $sum, total_sui: ($sum/1000000000)}'
               echo "::endgroup::"
               GAS_BUDGET=1000000000
-              GAS_COIN=$(echo "$GAS_INFO" | jq -r 'sort_by(.mistBalance|tonumber) | last.gasCoinId')
-              GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
-              COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
-                'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId')
-              COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
-              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST) budget=$GAS_BUDGET"
-              if [ -z "$GAS_COIN" ] || [ "$GAS_COIN" = "null" ] \
-                 || [ -z "$COLL_COIN" ] || [ "$COLL_COIN" = "null" ]; then
-                echo "::error::Wallet must have ≥2 SUI coins"
-                exit 1
-              fi
-              # Sui rejects the tx at validation if the gas coin's
-              # balance is below the budget reservation. Fail loudly
-              # here with a clear "wallet drained" message instead of
-              # an opaque RPC error.
-              if [ "$GAS_BAL" -lt "$GAS_BUDGET" ]; then
-                echo "::error::Largest coin $GAS_COIN has $GAS_BAL MIST, below budget $GAS_BUDGET. Wallet drained — top-up or re-consolidate."
+              # Pick any coin with balance ≥ budget — preferring the
+              # largest, but rotating to a different one if the previous
+              # call drained the prior-largest below budget. Sui rejects
+              # at validation (not execution) when the gas coin can't
+              # cover the budget reservation, so this guard saves us
+              # from opaque RPC errors and from staying stuck on a
+              # drained coin while others in the wallet still have
+              # plenty.
+              GAS_COIN=$(echo "$GAS_INFO" | jq -r --argjson b "$GAS_BUDGET" \
+                'map(select((.mistBalance|tonumber) >= $b))
+                 | sort_by(.mistBalance|tonumber) | last.gasCoinId // empty')
+              if [ -z "$GAS_COIN" ]; then
+                echo "::error::No coin in wallet has balance ≥ $GAS_BUDGET MIST."
                 echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
                 exit 1
               fi
+              GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
+              # Collateral can be any other coin (split is 1 MIST), so
+              # take the smallest one not chosen as gas.
+              COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
+                'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId // empty')
+              if [ -z "$COLL_COIN" ]; then
+                echo "::error::Wallet has only one coin; need ≥2 (gas + collateral)"
+                exit 1
+              fi
+              COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
+              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST) budget=$GAS_BUDGET"
 
               echo "::group::CLI invocation for $FQN"
               echo "  url: $TOOL_URL"
