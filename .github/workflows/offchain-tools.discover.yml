@@ -51,6 +51,11 @@ jobs:
         shell: bash
         env:
           CHANGED_FILES: ${{ steps.changes.outputs.all_changed_files }}
+          # Space-separated list of tool_name values to skip. Sourced
+          # from the repo-level `BLOCKED_TOOLS` variable so security
+          # blocks can be flipped via repo settings without a PR.
+          # Unset = no tools blocked.
+          BLOCKED_TOOLS: ${{ vars.BLOCKED_TOOLS }}
         run: |
           set -euo pipefail
           ALL='[]'
@@ -70,11 +75,36 @@ jobs:
           fi
           echo "Shared files touched: $SHARED_TOUCHED"
 
+          # Tools blocked from deployment are sourced from the repo
+          # variable `BLOCKED_TOOLS` (space-separated tool_name list).
+          # Discover excludes them from both matrices, which prevents
+          # the entire downstream pipeline (deploy → prepare → register
+          # → tf-apply) from touching them. Flip the variable in repo
+          # settings → Variables to unblock (no PR needed).
+          #
+          # Current blocks (2026-05-21):
+          #   http — no SSRF guard; would let a DAG reach the GCP
+          #          metadata server and exfiltrate an SA OAuth token.
+          #          Unregistered on chain; re-enable after the guard
+          #          ships in offchain/tools/http/.
+          read -ra BLOCKED_TOOLS_ARR <<< "${BLOCKED_TOOLS:-}"
+          echo "Blocked tools: ${BLOCKED_TOOLS_ARR[*]:-<none>}"
+
           for TOOLS_JSON in offchain/tools/*/tools.json; do
             [ -f "$TOOLS_JSON" ] || continue
             DIR=$(dirname "$TOOLS_JSON")
             TOOL_NAME=$(jq -r '.tool_name' "$TOOLS_JSON")
             COMMAND=$(jq -r '.command' "$TOOLS_JSON")
+
+            SKIP=false
+            for blocked in "${BLOCKED_TOOLS_ARR[@]}"; do
+              if [ "$TOOL_NAME" = "$blocked" ]; then
+                echo "::warning::Skipping blocked tool: $TOOL_NAME (in BLOCKED_TOOLS repo variable)"
+                SKIP=true
+                break
+              fi
+            done
+            [ "$SKIP" = "true" ] && continue
 
             TREE_HASH=$(git rev-parse "HEAD:${DIR}/")
             CONTENT_HASH=$(printf '%s' "$TREE_HASH" | sha256sum | cut -d' ' -f1)
