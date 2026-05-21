@@ -122,10 +122,30 @@ jobs:
               FQN=$(echo "$TOOL_META" | jq -r '.fqn')
               REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
 
+              # The CLI's gas pool is a single coin picked at startup
+              # (sui.rs:294 `with_gas(vec![one_coin])`); reusing the same
+              # coin across many CLI invocations drains it below the
+              # 100M budget and yields InsufficientGas. Re-query the
+              # wallet per call and pin the largest coin as gas and
+              # smallest (distinct) coin as collateral — fresh object
+              # refs every call, no chance of overlap.
+              GAS_INFO=$(sui client gas --json)
+              GAS_COIN=$(echo "$GAS_INFO" | jq -r 'sort_by(.mistBalance|tonumber) | last.gasCoinId')
+              COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
+                'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId')
+              if [ -z "$GAS_COIN" ] || [ "$GAS_COIN" = "null" ] \
+                 || [ -z "$COLL_COIN" ] || [ "$COLL_COIN" = "null" ]; then
+                echo "::error::Wallet must have ≥2 SUI coins (have:)"
+                echo "$GAS_INFO"
+                exit 1
+              fi
+
               OUT=$(echo "$TOOL_META" \
                 | nexus tool register offchain \
                     --from-meta - \
                     --url "$TOOL_URL" \
+                    --sui-gas-coin "$GAS_COIN" \
+                    --collateral-coin "$COLL_COIN" \
                     --invocation-cost 0 \
                     --no-save \
                     --json)
