@@ -130,16 +130,29 @@ jobs:
               # smallest (distinct) coin as collateral — fresh object
               # refs every call, no chance of overlap.
               GAS_INFO=$(sui client gas --json)
+              echo "::group::wallet coins before $FQN"
+              echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+              echo "$GAS_INFO" | jq 'length as $n | (map(.mistBalance|tonumber) | add) as $sum | {coin_count: $n, total_mist: $sum, total_sui: ($sum/1000000000)}'
+              echo "::endgroup::"
               GAS_COIN=$(echo "$GAS_INFO" | jq -r 'sort_by(.mistBalance|tonumber) | last.gasCoinId')
+              GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
               COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
                 'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId')
+              COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
+              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST)"
               if [ -z "$GAS_COIN" ] || [ "$GAS_COIN" = "null" ] \
                  || [ -z "$COLL_COIN" ] || [ "$COLL_COIN" = "null" ]; then
-                echo "::error::Wallet must have ≥2 SUI coins (have:)"
-                echo "$GAS_INFO"
+                echo "::error::Wallet must have ≥2 SUI coins"
                 exit 1
               fi
 
+              echo "::group::CLI invocation for $FQN"
+              echo "  url: $TOOL_URL"
+              echo "  tool_meta: $(echo "$TOOL_META" | jq -c '{fqn, url, timeout, description: (.description|.[0:40])}')"
+              echo "::endgroup::"
+
+              STDERR_LOG="${RUNNER_TEMP}/nexus-register.stderr"
+              set +e
               OUT=$(echo "$TOOL_META" \
                 | nexus tool register offchain \
                     --from-meta - \
@@ -148,7 +161,19 @@ jobs:
                     --collateral-coin "$COLL_COIN" \
                     --invocation-cost 0 \
                     --no-save \
-                    --json)
+                    --json 2>"$STDERR_LOG")
+              RC=$?
+              set -e
+              echo "::group::CLI stderr for $FQN (rc=$RC)"
+              cat "$STDERR_LOG" || true
+              echo "::endgroup::"
+              echo "::group::CLI stdout for $FQN"
+              echo "$OUT"
+              echo "::endgroup::"
+              if [ $RC -ne 0 ]; then
+                echo "::error::nexus CLI exited $RC for $FQN"
+                exit $RC
+              fi
 
               ENTRY=$(echo "$OUT" | jq -c '.[0]')
               ALREADY=$(echo "$ENTRY" | jq -r '.already_registered // false')
