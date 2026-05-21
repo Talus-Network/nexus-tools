@@ -8,6 +8,9 @@
 # Commands concerning native Nexus Tools
 mod tools 'tools/.just'
 
+# Example invocations for the memory-memwal Tools bundle
+mod memwal 'tools/memory-memwal/.just'
+
 # Pre-commit hooks
 mod pre-commit '.pre-commit/.just'
 
