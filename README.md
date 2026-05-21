@@ -84,22 +84,56 @@ tool automatically by globbing `offchain/tools/*/tools.json`.
 
 ## Branch model
 
-| Branch | Trigger | What runs |
-| --- | --- | --- |
-| `main` | push | discover + dry-run deploy on changed matrix (no chain ops) |
-| `iterate/testnet/<topic>` | push | full pipeline against **testnet** |
-| `iterate/mainnet/<topic>` | push | full pipeline against **mainnet** |
-| any | `workflow_dispatch` with `target-env=testnet\|mainnet` | full pipeline against the chosen env |
-| any | `workflow_dispatch` with `pr-number=<N>` | full pipeline against the PR's base env |
+Three roles:
 
-`main` is dev integration — code lands here for review but the
-deployer wallet is never touched. To actually deploy:
+- **`main`** — dev integration. Tip of `main` is the source of truth
+  for what code exists, but `main` never touches the deployer wallet
+  and never registers FQNs on chain.
+- **`testnet` / `mainnet`** — long-lived deploy branches. Pushes to
+  these fire the full chain pipeline against the corresponding env.
+- **`iterate/testnet/<topic>` / `iterate/mainnet/<topic>`** — short-
+  lived deploy branches for iteration. Fire the same full pipeline as
+  the long-lived branches; delete the branch once the deploy settles.
 
-- **Short-lived feature deploy** — push to an `iterate/testnet/<topic>`
-  branch. CI runs the full pipeline; the branch can be deleted once the
-  rollout settles.
-- **Manual one-off** — go to Actions → CI → Run workflow, pick the
-  target env (or pass a PR number to deploy that PR's head).
+| Trigger | Matrix | Build | Push images | Chain ops | TF apply |
+| --- | --- | --- | --- | --- | --- |
+| PR (any base) | changed | ✓ | dry-run | — | — |
+| Push to `main` | changed | ✓ | ✓ | — | — |
+| Push to `testnet` / `mainnet` | all | ✓ | ✓ | ✓ (env) | ✓ |
+| Push to `iterate/testnet/**` / `iterate/mainnet/**` | all | ✓ | ✓ | ✓ (env) | ✓ |
+| `workflow_dispatch` `target-env=testnet\|mainnet` | all | ✓ | ✓ | ✓ (chosen) | ✓ |
+| `workflow_dispatch` `pr-number=<N>` | all | ✓ | ✓ | ✓ (PR's base) | ✓ |
+
+## Lifecycle: PR → main → deploy
+
+1. **Open a PR with base `main`.** CI runs the dry-run path: discover
+   the changed-tool matrix, build each image, but don't push to the
+   registry and don't touch the chain. Reviewers verify the build is
+   clean and tests pass.
+1. **Merge to `main`.** Same as the PR run, but images now get pushed
+   to GCR (`gcr.io/<infra-project>/nexus-tools/<tool>:sha-<7>`). The
+   image is "available" but no Cloud Run service points at it yet and
+   no FQN is registered.
+1. **Promote to a deploy env.** Pick one of:
+   - **Long-lived branch merge** — fast-forward (or open another PR)
+     `testnet`/`mainnet` to whichever commit on `main` you want to
+     ship. Push fires the full chain pipeline. Best for steady-state
+     releases.
+   - **Iterate branch** — push to `iterate/testnet/<topic>` (or
+     `iterate/mainnet/<topic>`). Fires the same pipeline but doesn't
+     change the long-lived branch history. Best for fast iteration on
+     the deploy itself (the `tf-nexus-tools` side, register-step
+     debugging, etc.).
+   - **Manual one-off** — Actions → CI → "Run workflow". Pick
+     `target-env=testnet|mainnet`, or pass `pr-number=<N>` to deploy a
+     specific PR's head against the PR's base env. Best when you want
+     to test a not-yet-merged PR end-to-end without cutting a branch.
+
+After the chosen trigger fires, the full pipeline runs: discover →
+deploy → prepare → register → trigger-tf-apply. `ci-gate` only goes
+green if the dispatched `tf-nexus-tools` terraform run also succeeded,
+so a green pipeline means Cloud Run + ALB + DNS are reconciled and the
+FQN URLs on chain point at the right endpoints.
 
 ## What "full pipeline" does
 
