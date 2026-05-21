@@ -1,13 +1,8 @@
 //! # `xyz.taluslabs.memory.memwal.remember_bulk@1`
 //!
-//! Nexus Tool that stores up to 20 memories in a single batched call. Returns
-//! a confirmed Walrus `blob_id` per input item, in the same order. Suitable
-//! for DAG vertices that produce many memories at once (e.g. an extraction
-//! pipeline emitting multiple structured facts).
-//!
-//! The relayer rate-limits `/api/remember` at weight 5 per call, but
-//! `/api/remember/bulk` costs weight 10 for up to 20 items. That's a 10×
-//! efficiency gain in rate-limit budget when batching is feasible.
+//! Store up to 20 memories in one batched call. Returns blob_ids in input
+//! order. ~10× more rate-limit-efficient than N separate `remember` calls
+//! (weight 10 for up to 20 items vs 5 each).
 
 use {
     crate::client::{MemWalClient, MAX_BULK_ITEMS},

@@ -12,20 +12,12 @@ A Nexus Tool bundle exposing seven memory operations backed by the
 
 ## Pinned MemWal release
 
-This crate's wire format (canonical signed message, header names, endpoint
-paths, request/response shapes) is derived from the relayer source at tag
+Wire format pinned to
 [`@mysten-incubation/memwal@0.0.4`](https://github.com/MystenLabs/MemWal/tree/%40mysten-incubation%2Fmemwal%400.0.4/services/server)
-(commit `0cd0862ade`, server `Cargo.toml` version `0.1.0`). The HEAD of `main`
-at the time of writing differs from this tag only in MCP documentation —
-no Rust source changes — so this pin is byte-equivalent to the running
-production / staging relayers. `health_check()` compares the relayer's
-self-reported `/health` version against `MEMWAL_API_VERSION` and fails fast
-on mismatch.
-
-When the relayer publishes a new tag whose `auth.rs`, `types.rs`,
-`routes.rs`, or `rate_limit.rs` change, update the pin: bump
-`MEMWAL_API_VERSION` in `src/client.rs`, re-audit those four files at the
-new tag, and update this section accordingly.
+(server `Cargo.toml` v`0.1.0`). `health_check()` enforces the version at
+runtime against `GET /health`. On a new relayer tag with a Cargo bump or
+any change to `auth.rs` / `types.rs` / `routes.rs` / `rate_limit.rs`,
+update `MEMWAL_API_VERSION` in `src/client.rs` and re-audit those four files.
 
 ## Build & Run
 
@@ -42,18 +34,15 @@ BIND_ADDR=0.0.0.0:9000 cargo run --package memory-memwal
 
 ## Environment Variables
 
-`.env` files are loaded at startup via [`dotenvy`](https://crates.io/crates/dotenvy).
+`.env` (cwd-only) is loaded at startup via [`dotenvy`](https://crates.io/crates/dotenvy);
+existing exports win.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `MEMWAL_DELEGATE_PRIVATE_KEY` | **yes** | — | Hex-encoded 32-byte Ed25519 (Elliptic Curve Digital Signature Algorithm) delegate private key |
-| `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). When non-empty, sent as `x-account-id` and embedded in the signed canonical message — matches the JS SDK 1:1 and skips the relayer's slow on-chain registry scan. An explicitly-empty value is treated the same as unset. |
-| `MEMWAL_SERVER_URL` | no | `https://relayer.staging.memwal.ai` (testnet) | MemWal relayer base URL. Set to `https://relayer.memwal.ai` for mainnet. |
-
-Set `MEMWAL_ALLOW_INSECURE=1` to accept `http://` relayer URLs (local
-development and mockito tests only). Production deploys must leave this
-unset; the URL validator rejects non-`https` schemes by default and
-rejects URLs that carry a path, query, or fragment.
+| `MEMWAL_ACCOUNT_ID` | recommended | — | MemWal account object ID (`0x…`). Sent as `x-account-id` and signed into the canonical message. Unset → relayer falls back to a slower on-chain registry scan |
+| `MEMWAL_SERVER_URL` | no | `https://relayer.staging.memwal.ai` (testnet) | Relayer base URL. Validated as `https://` (no path/query/fragment/userinfo). Mainnet: `https://relayer.memwal.ai` |
+| `MEMWAL_ALLOW_INSECURE` | no | unset | Set to `1` to accept `http://` relayer URLs (dev/mockito only) |
 
 ## Server Endpoints
 
@@ -69,6 +58,11 @@ POST /<tool-path>/invoke
 ```
 
 ## Tools
+
+All seven tools return `Err { reason: String }` on failure (`reason` is a
+short, terse description; full upstream bodies are not inlined). Per-tool
+sections below cover only the `Ok` variant unless a failure mode is
+tool-specific.
 
 ---
 
@@ -97,12 +91,6 @@ when omitted.
 The memory was durably stored.
 
 - **`ok.blob_id`: `String`** — Walrus blob identifier for the stored memory.
-
-**`err`**
-
-The store operation failed.
-
-- **`err.reason`: `String`** — Human-readable error description.
 
 ## Example
 
@@ -150,13 +138,7 @@ Search completed. The result list may be empty if nothing matched.
   - **`text`: `String`** — The stored text of the memory.
   - **`blob_id`: `String`** — Walrus blob identifier.
   - **`distance`: `f64`** — Cosine distance from the query vector (lower = more relevant).
-  - **`namespace`: `String`** — Namespace the memory belongs to.
-
-**`err`**
-
-The search failed.
-
-- **`err.reason`: `String`** — Human-readable error description.
+- **`ok.namespace`: `String`** — The namespace that was searched (one query = one namespace).
 
 ## Example
 
@@ -210,12 +192,6 @@ Question answered successfully.
   - **`text`: `String`** — The stored text of the memory.
   - **`distance`: `f64`** — Cosine distance from the question vector.
 
-**`err`**
-
-The request failed.
-
-- **`err.reason`: `String`** — Human-readable error description.
-
 ## Example
 
 ```sh
@@ -263,12 +239,6 @@ Facts were submitted for storage.
 - **`ok.job_count`: `u32`** — Number of individual memory-write jobs enqueued.
   Zero means no facts were extracted from the text.
 
-**`err`**
-
-The request failed.
-
-- **`err.reason`: `String`** — Human-readable error description.
-
 ## Example
 
 ```sh
@@ -313,11 +283,7 @@ Every item was durably stored.
 - **`ok.blob_ids`: `Array<String>`** — Walrus blob identifiers, in the same
   order as the input `items`.
 
-**`err`**
-
-The batch was rejected (e.g. >20 items) or any individual item failed.
-
-- **`err.reason`: `String`** — Human-readable error description.
+**`err`** — additionally: the whole batch fails if any individual item fails (no partial success).
 
 ## Example
 
@@ -358,10 +324,6 @@ Deletion completed.
 - **`ok.deleted`: `u64`** — number of memories removed. Zero is a valid
   success (the namespace was empty or did not exist).
 
-**`err`**
-
-- **`err.reason`: `String`** — Human-readable error description.
-
 ## Example
 
 ```sh
@@ -400,10 +362,6 @@ Defaults to `"default"` on the server when omitted.
 - **`ok.storage_bytes`: `i64`** — total encrypted byte size on Walrus.
 - **`ok.namespace`: `String`** — the resolved namespace (mirrors what the
   server interpreted; `"default"` when the input was omitted).
-
-**`err`**
-
-- **`err.reason`: `String`** — Human-readable error description.
 
 ## Example
 

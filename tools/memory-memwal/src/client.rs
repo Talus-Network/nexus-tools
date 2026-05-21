@@ -1,27 +1,8 @@
 //! MemWal HTTP client.
 //!
-//! ## URL resolution
-//!
-//! The server URL is resolved in this order:
-//!   1. Explicit value passed via the tool's JSON input (`server_url` field).
-//!   2. `MEMWAL_SERVER_URL` environment variable — set on the container so ops
-//!      can point all tools at a staging or self-hosted relayer without
-//!      changing every caller.
-//!   3. The public production relayer (`https://relayer.memwal.ai`).
-//!
-//! ## Authentication
-//!
-//! The delegate private key is loaded from `MEMWAL_DELEGATE_PRIVATE_KEY` (hex-
-//! encoded Ed25519 scalar). It is never accepted as a tool input because tool
-//! inputs flow through the Nexus DAG as on-chain data and may be visible to
-//! Leader nodes and on-chain auditors.  Credentials that identify the tool's
-//! own service identity belong in the deployment environment, not the data flow.
-//!
-//! ## Async job polling
-//!
-//! Several MemWal endpoints return a `job_id` and a 202 Accepted status.
-//! [`MemWalClient::poll_job`] retries `GET /api/remember/:job_id` until the
-//! job reaches `completed` or `failed`, or a timeout is exceeded.
+//! Credentials (`MEMWAL_DELEGATE_PRIVATE_KEY`, optional `MEMWAL_ACCOUNT_ID`)
+//! and the relayer URL (`MEMWAL_SERVER_URL`) come from env at startup — never
+//! from tool inputs, which flow through the Nexus DAG as on-chain data.
 
 use {
     crate::{
@@ -40,25 +21,16 @@ use {
     zeroize::Zeroizing,
 };
 
-/// One-shot guard so the "missing delegate key" warning is emitted at most
-/// once per process even though `from_env` runs once per registered tool.
-///
-/// `Once::call_once` is a blocking primitive — anything inside the closure
-/// blocks every other caller until it returns. The closure must remain
-/// trivially fast (a single `log::warn!` is fine); never add filesystem,
-/// network, or any work that can spuriously stall.
+/// One-shot guard so the "missing delegate key" warning fires once even
+/// though `from_env` runs once per registered tool. Keep the closure
+/// trivially fast — `Once::call_once` blocks every other caller until it
+/// returns.
 static WARN_MISSING_KEY: Once = Once::new();
 
-/// Load `<cwd>/.env` into the process environment if it exists.
-///
-/// Restricted to the current working directory (no parent walk) so a `.env`
-/// planted at `/`, `/etc/`, or any ancestor of the binary's cwd cannot
-/// influence the process. Existing exports always win — variables already
-/// set in the environment are not overwritten.
-///
-/// Must be called from `main` **before** the tokio runtime is built so the
-/// `set_var` calls happen single-threaded, even though the practical race
-/// window in this binary is empty.
+/// Load `<cwd>/.env` if present. Cwd-only (no parent walk) so a planted
+/// `.env` above the binary's cwd cannot influence the process. Existing
+/// exports always win. Must be called before the tokio runtime is built —
+/// `set_var` is unsound from a multi-threaded process.
 pub(crate) fn load_dotenv_if_present() {
     let candidate = match std::env::current_dir() {
         Ok(d) => d.join(".env"),
@@ -76,26 +48,15 @@ pub(crate) fn load_dotenv_if_present() {
     }
 }
 
-/// Classification of the delegate key value read from the environment.
-///
-/// "Valid" means: the hex decodes to exactly 32 bytes — the Ed25519 scalar
-/// shape used by both MemWal's relayer auth and Sui's default account-key
-/// flavour. Any 32 raw bytes form a valid Ed25519 secret (ed25519-dalek
-/// SHA-512-hashes them to derive the scalar), so this is the strongest check
-/// we can do client-side. The relayer additionally verifies that the
-/// derived public key is registered on chain as a delegate for a MemWal
-/// account — that authority check can only happen server-side.
-/// Classification result with a hand-written `Debug` impl that redacts the
-/// secret hex in the `Ok` variant. Auto-deriving `Debug` would let any
-/// future `{:?}` print dump the delegate key into a log line or panic
-/// message; this impl makes that impossible by construction.
+/// Classification of the delegate key env var. Hand-written `Debug` redacts
+/// the secret in `Ok` — never `derive` Debug on this type.
 enum KeyValidation {
-    /// Key is set and decodes to 32 bytes. Carries the original hex string
-    /// wrapped in `Zeroizing` so the heap buffer is wiped on drop.
+    /// Valid: 32-byte Ed25519 scalar, hex-encoded. Wrapped in `Zeroizing` so
+    /// the heap buffer is wiped on drop.
     Ok(Zeroizing<String>),
-    /// Env var is unset or empty. Boot continues; signed calls will fail.
+    /// Unset or empty. Boot continues; signed calls fail with MissingKey.
     Missing,
-    /// Env var is set but malformed. Carries an operator-facing reason.
+    /// Set but malformed. Carries an operator-facing reason.
     Invalid(String),
 }
 
@@ -146,27 +107,17 @@ fn classify_key(value: Option<&str>) -> KeyValidation {
     KeyValidation::Ok(Zeroizing::new(raw.to_string()))
 }
 
-/// Run the delegate-key validation eagerly at process startup.
-///
-/// `bootstrap!` constructs `NexusTool` instances lazily on first request, so
-/// without this hook a malformed-key misconfiguration would only surface
-/// when an `/invoke` actually arrived — long after `server-start` reported
-/// "Ready". Call this from `main` before handing control to the toolkit;
-/// `main` is the only site permitted to exit the process on error.
+/// Eager startup-time key validation. Without this, a malformed key would
+/// only surface on the first `/invoke` (well after `server-start` reports
+/// "Ready") because `bootstrap!` constructs `NexusTool` instances lazily.
+/// Called from `main`, which owns the only `process::exit` site.
 pub(crate) fn validate_credentials_at_startup() -> Result<(), String> {
     read_validated_private_key().map(|_| ())
 }
 
-/// Read and validate `MEMWAL_DELEGATE_PRIVATE_KEY`.
-///
-/// - **Set and valid** → `Ok(Some(hex))`.
-/// - **Unset / empty** → `Ok(None)` after a one-shot warning. The binary
-///   keeps booting so `/tools` listing and process liveness still work;
-///   signed calls fail at signature time with `AuthError::MissingKey`.
-/// - **Set but malformed** → `Err(reason)`. `main` translates this to a
-///   process exit at startup; `from_env` (called per tool boot or per
-///   invocation) downgrades it to an error log + empty key so a single
-///   misconfigured rotate doesn't kill in-flight requests.
+/// `Ok(Some(hex))` valid; `Ok(None)` unset (warn-and-continue); `Err(reason)`
+/// malformed. `main` exits on `Err`; `from_env` downgrades it to a log so a
+/// mid-process key rotation doesn't kill in-flight requests.
 fn read_validated_private_key() -> Result<Option<Zeroizing<String>>, String> {
     // `env::var` returns a fresh `String` — wrap it immediately so that
     // intermediate copy is also zeroed on drop.
@@ -187,83 +138,45 @@ fn read_validated_private_key() -> Result<Option<Zeroizing<String>>, String> {
     }
 }
 
-/// MemWal relayer version this crate was written against.
+/// MemWal relayer version this crate is pinned to.
 ///
-/// **Pinned reference:** tag [`@mysten-incubation/memwal@0.0.4`][tag] at
-/// commit `0cd0862ade` on `https://github.com/MystenLabs/MemWal`. Every
-/// wire-format invariant in this crate (canonical signed message, header
-/// names, endpoint paths, request/response shapes) was derived from
+/// Source of truth: tag [`@mysten-incubation/memwal@0.0.4`][tag],
+/// `services/server/Cargo.toml`. Every wire-format invariant in this crate
+/// (canonical signed message, header names, endpoint paths, request/
+/// response shapes) was derived from
 /// `services/server/src/{auth,types,routes,rate_limit}.rs` at that tag.
 ///
-/// The string itself is the `version` field of the relayer's
-/// `services/server/Cargo.toml` at that tag (`0.1.0`). It is also what the
-/// live relayer reports at `GET /health` (`{"status":"ok","version":"0.1.0"}`).
-/// `health_check()` compares the two and fails fast on mismatch.
-///
-/// There is no published OpenAPI spec; the prose docs at
-/// <https://docs.memwal.ai> describe the API at a high level only — the
-/// source is the authoritative wire-format reference.
-///
-/// **Maintenance:** when the relayer publishes a new tag with a Cargo
-/// package-version bump or any change to `auth.rs`/`types.rs`/`routes.rs`,
-/// re-audit those files at the new tag and update this constant + the doc
-/// comment together. Until then, this crate is intentionally pinned to a
-/// known-good release rather than tracking `main`.
+/// **Maintenance contract:** on every new relayer tag with a Cargo version
+/// bump *or* any change to those four files, re-audit and update this
+/// constant. [`MemWalClient::health_check`] enforces the version match at
+/// runtime against `GET /health`'s `version` field.
 ///
 /// [tag]: https://github.com/MystenLabs/MemWal/tree/%40mysten-incubation%2Fmemwal%400.0.4/services/server
 pub(crate) const MEMWAL_API_VERSION: &str = "0.1.0";
 
-/// Public MemWal relayer pointing at Sui **mainnet**.
-///
-/// Verified via `GET /config` → `{"network": "mainnet", ...}`.
-///
-/// Reference constant — operators select this by setting `MEMWAL_SERVER_URL`
-/// in the deployment environment rather than via a Rust code path.
 #[allow(dead_code)]
 pub(crate) const RELAYER_URL_MAINNET: &str = "https://relayer.memwal.ai";
 
-/// Public MemWal relayer pointing at Sui **testnet**.
-///
-/// The hostname carries `staging` rather than `testnet` because Walrus
-/// Foundation runs this instance as their pre-production environment, which
-/// is the relayer wired to Sui testnet. Documented in
-/// `docs/relayer/public-relayer.md` in the MystenLabs/MemWal repository.
+/// Walrus Foundation's pre-production deployment is wired to Sui testnet —
+/// the `staging` hostname is not a typo.
 pub(crate) const RELAYER_URL_TESTNET: &str = "https://relayer.staging.memwal.ai";
 
-/// Default URL used when neither the tool input nor `MEMWAL_SERVER_URL` is
-/// set. Points at testnet so the MemWal beta API can be exercised without
-/// spending real SUI; mainnet deployments must opt in via env var or
-/// per-call override.
+/// Default points at testnet so the beta API can be exercised without
+/// real SUI; mainnet requires opting in via `MEMWAL_SERVER_URL`.
 pub(crate) const DEFAULT_SERVER_URL: &str = RELAYER_URL_TESTNET;
 
-/// Env var for overriding the relayer URL at the operator level.
 pub(crate) const ENV_SERVER_URL: &str = "MEMWAL_SERVER_URL";
-
-/// Env var carrying the hex-encoded Ed25519 delegate private key.
 pub(crate) const ENV_PRIVATE_KEY: &str = "MEMWAL_DELEGATE_PRIVATE_KEY";
-
-/// Env var carrying the MemWal account object ID (the on-chain Sui Move object
-/// that owns the delegate keys). When set, it is sent as the `x-account-id`
-/// header AND embedded in the signed canonical message — matching the JS
-/// SDK 1:1. When unset, the relayer falls back to an on-chain registry scan
-/// keyed by public key, which is slower and more fragile.
 pub(crate) const ENV_ACCOUNT_ID: &str = "MEMWAL_ACCOUNT_ID";
 
-/// First poll fires after this delay so a job that completes quickly is
-/// observed without waiting a full back-off cycle.
+/// First poll fires after a short delay so fast jobs resolve fast.
 const POLL_INITIAL: Duration = Duration::from_millis(100);
-
-/// Upper bound on the inter-poll delay during exponential backoff. Caps how
-/// much rate-limit budget a single slow job can spend.
+/// Cap on inter-poll delay — bounds the rate-limit cost of a slow job.
 const POLL_MAX: Duration = Duration::from_secs(4);
-
-/// Wall-clock budget for a single `poll_job` / `poll_bulk_jobs` call before
-/// it gives up with `MemWalError::Timeout`. Sized for Walrus tail-latency
-/// — erasure-coded shard replication can take 30-60 s under load.
+/// Wall-clock budget per `poll_job` / `poll_bulk_jobs`. Sized for Walrus
+/// erasure-coded tail latency (30–60 s under load).
 const POLL_BUDGET: Duration = Duration::from_secs(60);
 
-/// Exponential backoff with capping. Each call doubles the delay until it
-/// reaches POLL_MAX.
 fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(POLL_MAX)
 }
@@ -278,33 +191,22 @@ fn check_text_len(field: &str, value: &str) -> Result<(), MemWalError> {
     Ok(())
 }
 
-/// Server-side per-batch cap. Mirrors the relayer's `MAX_BULK_ITEMS = 20`
-/// in `services/server/src/routes.rs` at the pinned tag — kept in sync so
-/// the tool's error message matches the relayer's behavior. Validated at
-/// the tool boundary so a 21-item batch surfaces as a clean tool-level
-/// reason rather than an opaque HTTP 400.
+/// Mirrors the relayer's `MAX_BULK_ITEMS` so a 21-item batch fails at the
+/// tool boundary with a clear reason instead of an opaque HTTP 400.
 pub(crate) const MAX_BULK_ITEMS: usize = 20;
 
-/// Upper bound on each tool's primary text input. Sized to comfortably hold
-/// a long document while keeping signature material and outbound bandwidth
-/// reasonable. The relayer enforces its own size limits server-side; this
-/// is a defensive cap at the tool boundary so oversized inputs fail
-/// immediately instead of consuming a signed request slot and a rate-limit
-/// point.
+/// Defensive cap on text-carrying tool inputs. Oversized inputs fail before
+/// burning a signed-request slot.
 pub(crate) const MAX_TEXT_BYTES: usize = 1 << 20; // 1 MiB
 
-/// Translate a non-2xx response into a `MemWalError`, distinguishing rate
-/// limits (so callers can back off intelligently) from generic upstream
-/// failures (where the full body is logged structurally but only a terse
-/// status family is surfaced to the unauthenticated /invoke caller).
+/// Map non-2xx into `MemWalError`: 429 → `RateLimited` (parses
+/// `Retry-After`); everything else → a terse `Server(_)` that does NOT
+/// inline the upstream body, since `/invoke` callers are unauthenticated.
 ///
-/// **Logging sensitivity:** the body snippet logged under
-/// `target = "memwal::upstream"` can contain account hints, moderation
-/// messages quoting stored memory text, or other relayer internals. The
-/// snippet is capped at 256 chars but is NOT redacted. Operators who treat
-/// their log files as a lower-trust channel than the binary itself should
-/// filter via `RUST_LOG=memwal::upstream=off` (or `=error`) and rely on
-/// the terse client-facing error returned below.
+/// The full body (capped 256 chars) is logged under `target=memwal::upstream`.
+/// It may quote stored memory text or other relayer internals — operators
+/// who treat logs as lower-trust than the binary should filter via
+/// `RUST_LOG=memwal::upstream=off`.
 async fn map_error_response(resp: reqwest::Response) -> MemWalError {
     let status = resp.status();
     if status.as_u16() == 429 {
@@ -346,12 +248,9 @@ pub(crate) struct RememberResponse {
     pub(crate) job_id: String,
 }
 
-/// Lifecycle states emitted by the relayer's job-state machine.
-///
-/// `#[serde(other)]` Unknown captures any status string the relayer
-/// introduces later: the polling loops surface Unknown as an error rather
-/// than looping on it indefinitely, so a new pre-pinned-tag status cannot
-/// stall the call.
+/// Job state from the relayer. `Unknown` (via `#[serde(other)]`) captures
+/// future statuses — polling loops surface it as an error rather than
+/// looping on something they don't recognize.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum JobStatus {
@@ -447,10 +346,8 @@ pub(crate) struct BulkStatusResponse {
     pub(crate) results: Vec<BulkStatusItem>,
 }
 
-/// Response from `GET /health`. The relayer reports `{"status": "ok",
-/// "version": "0.1.0", "mode": "production"}` — additional fields are
-/// allowed and ignored. We require `version` so missing/typo cases fail
-/// loudly per the maintenance-pin contract on [`MEMWAL_API_VERSION`].
+/// `GET /health` body. `version` is required (enforces the maintenance-pin
+/// contract on [`MEMWAL_API_VERSION`]); other fields are allowed and ignored.
 #[derive(Deserialize)]
 struct HealthResponse {
     version: Option<String>,
@@ -460,14 +357,9 @@ struct HealthResponse {
 // Client
 // ---------------------------------------------------------------------------
 
-/// Process-wide HTTP client, shared across every `MemWalClient` so the
+/// Process-wide HTTP client shared across every `MemWalClient` so the
 /// connection pool, TLS session cache, and HTTP/2 multiplexing survive
-/// across Nexus `invoke` calls.
-///
-/// `reqwest::Client` wraps an `Arc<ClientRef>` internally, so cloning is a
-/// cheap Arc bump. The builder options below are conservative defaults — a
-/// hung relayer terminates the per-request future after 30 s instead of
-/// parking the calling task indefinitely.
+/// across `invoke` calls. `reqwest::Client` clone is a cheap `Arc` bump.
 static SHARED_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn shared_http() -> reqwest::Client {
@@ -485,29 +377,19 @@ fn shared_http() -> reqwest::Client {
         .clone()
 }
 
-/// True when the operator has explicitly opted in to non-HTTPS relayer URLs
-/// for local development. Production deploys must leave this unset.
+/// `MEMWAL_ALLOW_INSECURE=1` opts in to non-HTTPS relayer URLs (dev/test only).
 fn allow_insecure() -> bool {
     std::env::var("MEMWAL_ALLOW_INSECURE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
-/// Parse a candidate relayer base URL against the relayer-URL policy.
-///
-/// - Requires `https://` unless `allow_insecure` is `true`, in which case
-///   `http://` is also accepted. The flag is parameterised (rather than
-///   read from env here) so the policy is pure-testable.
-/// - Rejects paths, queries, and fragments in the base — `Url::join` would
-///   otherwise concatenate them with the per-call path and silently rewrite
-///   the signed message's path segment.
-/// - Rejects userinfo (`https://user:secret@host`) — basic-auth has no
-///   place on a relayer URL that authenticates via signed headers, and
-///   leaving it in would tag every outbound request with the credentials.
+/// Validate a relayer base URL. Rejects: non-https (unless `allow_insecure`),
+/// path beyond root, query/fragment, userinfo. `allow_insecure` is a
+/// parameter (not read from env) so the policy is pure-testable.
 fn parse_relayer_url(raw: &str, allow_insecure: bool) -> Result<Url, MemWalError> {
-    // Don't echo the raw URL in the parse-failure message: an operator who
-    // accidentally embedded credentials (`https://user:secret@host/...`)
-    // and then mistyped the rest would otherwise leak them into stderr,
+    // Don't echo the raw URL in parse errors: an embedded
+    // `user:secret@host` plus a typo would leak the secret into stderr,
     // log files, and (because each tool's `new()` panics on Config) into
     // the panic message itself.
     let url =
@@ -546,15 +428,12 @@ fn parse_relayer_url(raw: &str, allow_insecure: bool) -> Result<Url, MemWalError
 pub(crate) struct MemWalClient {
     http: reqwest::Client,
     api_base: Url,
-    /// `Some` once the delegate key parsed successfully. `None` when the
-    /// env var was missing or malformed at construction; signed calls then
-    /// return `AuthError::MissingKey` so the failure mode is a clean 4xx
-    /// at the tool boundary rather than a process exit.
+    /// `None` when the env key was missing or malformed; signed calls then
+    /// return `AuthError::MissingKey` instead of taking down the process.
     signing: Option<Arc<SigningMaterial>>,
-    /// MemWal account object ID. Empty string when not configured — the
-    /// relayer then resolves the account from the public key via on-chain
-    /// scan. Signed into the canonical message; sent as `x-account-id`
-    /// header only when non-empty (mirrors the JS SDK).
+    /// Empty when unconfigured (relayer falls back to a registry scan).
+    /// Signed into the canonical message; sent as `x-account-id` only when
+    /// non-empty (mirrors the JS SDK).
     account_id: Arc<str>,
 }
 
@@ -564,19 +443,10 @@ struct SigningMaterial {
 }
 
 impl MemWalClient {
-    /// Build a `MemWalClient` from environment variables. This is the
-    /// production constructor.
-    ///
-    /// `MEMWAL_SERVER_URL` overrides the relayer URL; missing or empty
-    /// values fall back to `DEFAULT_SERVER_URL`. The URL is validated
-    /// (https-only unless `MEMWAL_ALLOW_INSECURE=1`) and parse failure
-    /// returns `MemWalError::Config` rather than panicking.
-    ///
-    /// Delegates key handling to [`read_validated_private_key`]: a missing
-    /// key produces a one-shot warning and the client boots with no
-    /// signing material; a malformed key logs an error and behaves the
-    /// same way. Startup-time validation in `main` is the right place to
-    /// fail-fast on persistent misconfiguration.
+    /// Production constructor: validates `MEMWAL_SERVER_URL` (`Err(Config)`
+    /// on parse failure) and parses the delegate key. A missing/malformed
+    /// key logs but doesn't error here — `main`'s startup validation is the
+    /// fail-fast site.
     pub(crate) fn from_env() -> Result<Self, MemWalError> {
         let api_base_raw = std::env::var(ENV_SERVER_URL)
             .ok()
@@ -744,21 +614,13 @@ impl MemWalClient {
         Ok(resp.job_id)
     }
 
-    /// `GET /api/remember/:job_id` — poll until the job reaches a terminal
-    /// state. Returns the `blob_id` on success.
+    /// Poll `GET /api/remember/:job_id` to terminal state. Exponential
+    /// backoff (POLL_INITIAL → POLL_MAX) within POLL_BUDGET; an unrecognized
+    /// status from the server is a hard error, not an in-progress signal.
     ///
-    /// Polling cadence is exponential: a 100 ms initial probe (so jobs that
-    /// finish quickly resolve quickly), doubling up to a 4 s ceiling, until
-    /// the 60 s wall-clock budget is exhausted. An unrecognized status from
-    /// the server is treated as an error rather than looped on so a future
-    /// status addition cannot stall the call indefinitely.
-    ///
-    /// **Cancel-safety:** the polling loop itself is cancel-safe — dropping
-    /// the returned future releases the HTTP connection and the timer
-    /// cleanly. **The server-side job is not cancellable**: once the initial
-    /// POST returned 202, the relayer writes the Walrus blob regardless of
-    /// whether the caller still listens. A dropped poll leaks one blob
-    /// reference; operators sensitive to storage cost must not cancel.
+    /// **Cancel-safety:** the loop is cancel-safe locally, but the
+    /// server-side write is **not cancellable** — dropping the future after
+    /// the initial 202 leaks one Walrus blob.
     pub(crate) async fn poll_job(&self, job_id: &str) -> Result<String, MemWalError> {
         let path = format!("/api/remember/{job_id}");
         let deadline = Instant::now() + POLL_BUDGET;
@@ -911,14 +773,10 @@ impl MemWalClient {
             .map_err(MemWalError::from)
     }
 
-    /// `POST /api/remember/bulk` — submit up to MAX_BULK_ITEMS texts in a single
-    /// 202-Accepted call. Returns one job_id per item, in the order submitted.
-    /// Each job still needs polling — use [`poll_bulk_jobs`] for the batched
-    /// status endpoint instead of N separate [`poll_job`] calls.
-    ///
-    /// Callers should enforce the `1..=MAX_BULK_ITEMS` cap before calling so
-    /// oversized batches fail at the tool boundary instead of round-tripping
-    /// to the relayer for an opaque HTTP 400.
+    /// Submit up to `MAX_BULK_ITEMS` texts in one 202-Accepted call. Callers
+    /// must enforce the `1..=MAX_BULK_ITEMS` cap before this — oversized
+    /// batches get an opaque HTTP 400 from the relayer. Pair with
+    /// [`poll_bulk_jobs`] for the batched status endpoint.
     pub(crate) async fn remember_bulk(
         &self,
         items: &[(&str, Option<&str>)],
@@ -950,21 +808,11 @@ impl MemWalClient {
         Ok(resp.job_ids)
     }
 
-    /// `POST /api/remember/bulk/status` — poll batched jobs until every one
-    /// reaches a terminal state or the wall-clock budget runs out. Returns
-    /// blob_ids in the same order as `job_ids`. Any individual `failed`
-    /// surfaces as `Err(JobFailed)` identifying the first failure.
-    ///
-    /// Two optimizations over the naïve poll-all-every-time approach:
-    /// - A terminal-state `HashMap` caches jobs that already finished, so
-    ///   each subsequent poll only queries the still-pending subset
-    ///   (relayer pays less work; rate-limit budget shrinks with completion).
-    /// - Lookups during result assembly are O(1) via the same map — no
-    ///   per-poll O(N²) linear scan.
-    ///
-    /// **Cancel-safety:** same caveat as [`MemWalClient::poll_job`] — the
-    /// local loop drops cleanly, but the server-side bulk writes complete
-    /// regardless. Dropping mid-poll can leak up to `MAX_BULK_ITEMS` blobs.
+    /// Poll batched jobs to terminal state, returning blob_ids in input
+    /// order. First `failed` surfaces as `Err(JobFailed)`. Each poll queries
+    /// only the still-pending subset (cached terminal jobs in a HashMap),
+    /// so rate-limit cost shrinks with completion. Same cancel-safety
+    /// caveat as [`MemWalClient::poll_job`], scaled to MAX_BULK_ITEMS.
     pub(crate) async fn poll_bulk_jobs(
         &self,
         job_ids: &[String],
@@ -1060,16 +908,10 @@ impl MemWalClient {
         Ok(resp.results)
     }
 
-    /// `GET /health` — check whether the relayer is reachable and on the
-    /// expected API version.
-    ///
-    /// The health endpoint is public (no auth required). The response must
-    /// be JSON with a `"version"` string field that matches
-    /// [`MEMWAL_API_VERSION`]; a missing field, wrong type, non-JSON body,
-    /// or mismatched version is a failure. The maintenance-pin contract
-    /// stated on [`MEMWAL_API_VERSION`] depends on this check actually
-    /// being enforced — a "best-effort" version check is the same as no
-    /// check at all.
+    /// `GET /health` — reachability + API-version match. Public (no auth).
+    /// Required: JSON body with `version` matching [`MEMWAL_API_VERSION`].
+    /// Missing field / wrong type / non-JSON / mismatch all return `Err`;
+    /// "best-effort" version check would void the maintenance-pin contract.
     pub(crate) async fn health_check(&self) -> Result<(), MemWalError> {
         let url = self.join_path("/health")?;
         let resp = self.http.get(url).send().await?;

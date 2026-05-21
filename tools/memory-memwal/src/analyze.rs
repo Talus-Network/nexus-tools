@@ -1,13 +1,8 @@
 //! # `xyz.taluslabs.memory.memwal.analyze@1`
 //!
-//! Nexus Tool that extracts discrete facts from a text document and stores
-//! each fact as an individual memory. The relayer runs an LLM fact-extraction
-//! pass internally and enqueues one memory-write job per fact found.
-//!
-//! This tool returns immediately after the jobs are enqueued — it does not
-//! poll for individual job completion. The output indicates how many fact-
-//! extraction jobs were submitted, which is useful for downstream monitoring
-//! or logging but does not block the DAG on individual Walrus writes.
+//! Extract facts from a document via an LLM pass and enqueue one memory-write
+//! job per fact. Returns the count of jobs submitted (fire-and-forget — no
+//! per-job polling).
 
 use {
     crate::client::MemWalClient,

@@ -1,46 +1,9 @@
-//! Nexus Tools for MemWal persistent memory.
+//! Nexus Tools for MemWal persistent memory. See `README.md` for the tool
+//! list, env vars, and per-tool I/O contracts.
 //!
-//! ## Pinned MemWal release
-//!
-//! Wire format is derived from the relayer source at tag
-//! `@mysten-incubation/memwal@0.0.4` (commit `0cd0862ade`, server
-//! `Cargo.toml` version `0.1.0`). See `client::MEMWAL_API_VERSION` for the
-//! maintenance contract: re-audit `services/server/src/{auth,types,routes,
-//! rate_limit}.rs` at any newly published tag whose Cargo version differs.
-//!
-//! ## Exposed tools
-//!
-//! Exposes seven tools under a single binary:
-//!
-//! - `RememberMemory`       — store a text memory and return its blob ID
-//! - `RememberBulkMemories` — store up to 20 memories in one batched call
-//! - `RecallMemories`       — semantic search over stored memories
-//! - `AskMemory`            — memory-augmented Q&A
-//! - `AnalyzeAndRemember`   — extract facts from text and store each as a memory
-//! - `ForgetMemories`       — delete every memory in a namespace
-//! - `StatsForAccount`      — count + stored bytes for a namespace
-//!
-//! ## Environment configuration
-//!
-//! `.env` files are loaded at startup via [`dotenvy`].
-//!
-//! ### Required
-//!
-//! | Variable | Description |
-//! |---|---|
-//! | `MEMWAL_DELEGATE_PRIVATE_KEY` | Hex-encoded 32-byte Ed25519 delegate private key |
-//!
-//! ### Recommended
-//!
-//! | Variable | Description |
-//! |---|---|
-//! | `MEMWAL_ACCOUNT_ID` | MemWal account object ID (`0x…`). Sent as `x-account-id` and embedded in the signed message — matches the JS SDK 1:1 and skips the on-chain registry scan. |
-//!
-//! ### Optional
-//!
-//! | Variable | Default | Description |
-//! |---|---|---|
-//! | `MEMWAL_SERVER_URL` | `https://relayer.staging.memwal.ai` (testnet) | MemWal relayer base URL. Set to `https://relayer.memwal.ai` for mainnet. |
+//! Wire format pinned to `@mysten-incubation/memwal@0.0.4` (server Cargo
+//! version `0.1.0`). [`client::MEMWAL_API_VERSION`] documents the
+//! re-audit contract on tag bumps.
 
 use nexus_toolkit::bootstrap;
 
@@ -56,18 +19,14 @@ mod remember_bulk;
 mod stats;
 
 fn main() {
-    // env_logger is installed before any other startup work so the dotenv
-    // and credential paths emit through `log::{info,warn,error}` instead of
-    // raw stderr. `nexus-toolkit`'s `bootstrap!` also calls `try_init()`,
-    // which is a no-op once a logger is already registered.
+    // Install env_logger before anything else so dotenv/credential paths
+    // emit through `log::*`; `bootstrap!`'s own `try_init()` becomes a no-op.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
 
-    // Run `.env` loading and credential validation single-threaded, before
-    // the multi-threaded tokio runtime exists. This keeps the dotenv
-    // `set_var` calls out of any concurrent-read window and lets `main`
-    // own the only `process::exit` site in the binary.
+    // dotenv + credential validation run single-threaded — `set_var` is
+    // unsound from a multi-threaded process. `main` is the only exit site.
     client::load_dotenv_if_present();
     if let Err(reason) = client::validate_credentials_at_startup() {
         log::error!("{} {reason}", client::ENV_PRIVATE_KEY);

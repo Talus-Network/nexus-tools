@@ -1,26 +1,16 @@
 //! Ed25519 request signing for the MemWal relayer.
 //!
-//! Every protected route requires four headers constructed from the operator's
-//! Ed25519 delegate private key (held in `MEMWAL_DELEGATE_PRIVATE_KEY`):
-//!
 //! ```text
 //! x-public-key : hex(public_key)
 //! x-timestamp  : unix_seconds
-//! x-nonce      : UUID v4 (one per request — checked server-side against Redis
-//!                for replay protection; 600 s TTL)
+//! x-nonce      : UUID v4 (fresh per request; server checks against a 600 s
+//!                Redis replay cache, missing header → HTTP 426)
 //! x-signature  : hex(Ed25519_sign(key,
 //!                  "{ts}.{METHOD}.{path}.{sha256hex(body)}.{nonce}.{account_id}"))
 //! ```
 //!
-//! `{account_id}` is the empty string when the optional `x-account-id` header
-//! is not sent — the relayer derives the account from the public key on chain.
-//!
-//! Replay protection: the relayer rejects any timestamp outside a ±5-minute
-//! window of its clock, and rejects any nonce it has seen in the last 10 min.
-//! Together these mean we MUST mint a fresh UUID per request.
-//!
-//! Backwards compatibility: missing `x-nonce` returns HTTP 426 Upgrade Required
-//! (the relayer's signal that the client is a legacy SDK that needs to upgrade).
+//! `{account_id}` is `""` when `x-account-id` is not sent. Server rejects
+//! timestamps outside ±5 min — host clock must be reasonably accurate.
 
 use {
     crate::error::AuthError,
@@ -38,19 +28,15 @@ pub(crate) struct AuthHeaders {
     pub(crate) nonce: String,
 }
 
-/// Parse a hex-encoded 32-byte Ed25519 secret into a `SigningKey` plus the hex
-/// representation of its derived public key.
-///
-/// Done **once** at startup (or per `MemWalClient` construction) so signing
-/// no longer pays for hex decoding + `SigningKey::from_bytes` (a SHA-512 over
-/// the secret) + `verifying_key()` (Curve25519 scalar mult) per request.
+/// Parse a hex 32-byte Ed25519 secret into a `SigningKey` plus its public
+/// key in hex. Called once at startup so signing skips per-request hex
+/// decode, SHA-512 derivation, and Curve25519 scalar mult.
 pub(crate) fn parse_signing_key(private_key_hex: &str) -> Result<(SigningKey, String), AuthError> {
     if private_key_hex.is_empty() {
         return Err(AuthError::MissingKey);
     }
-    // `Zeroizing<Vec<u8>>` zeroes the heap buffer when dropped. Without it
-    // the secret bytes would linger in unused heap until the allocator
-    // reuses them — a core dump captured before that point recovers the key.
+    // Zeroize the heap buffer + stack copy; SigningKey is ZeroizeOnDrop but
+    // these intermediates aren't — a core dump in between would recover the key.
     let raw: Zeroizing<Vec<u8>> = Zeroizing::new(hex::decode(private_key_hex)?);
     if raw.len() != 32 {
         return Err(AuthError::InvalidKeyLength(raw.len()));
@@ -58,19 +44,14 @@ pub(crate) fn parse_signing_key(private_key_hex: &str) -> Result<(SigningKey, St
     let mut key_bytes: [u8; 32] = [0u8; 32];
     key_bytes.copy_from_slice(&raw);
     let signing_key = SigningKey::from_bytes(&key_bytes);
-    // SigningKey is ZeroizeOnDrop; the stack copy here is not. Explicit
-    // zeroize closes the window between `from_bytes` and stack unwinding.
     key_bytes.zeroize();
     let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
     Ok((signing_key, public_key_hex))
 }
 
-/// Build the canonical signed message exactly as the relayer's `auth.rs`
-/// expects it. Extracted as a pure function so a unit test can lock the
-/// format independently of the crypto.
-///
-/// See `services/server/src/auth.rs` in tag `@mysten-incubation/memwal@0.0.4`
-/// for the server-side reference.
+/// Canonical signed message per the relayer's `services/server/src/auth.rs`
+/// at tag `@mysten-incubation/memwal@0.0.4`. Pure so the format can be
+/// locked by a unit test independent of the crypto.
 fn canonical_message(
     ts: &str,
     method: &str,
@@ -82,24 +63,10 @@ fn canonical_message(
     format!("{ts}.{method}.{path}.{body_hash}.{nonce}.{account_id}")
 }
 
-/// Build the MemWal auth headers for a single request.
-///
-/// `signing_key`    is the pre-parsed delegate key.
-/// `public_key_hex` is the hex form of the derived public key (computed once
-///                  by [`parse_signing_key`] at startup so signing doesn't
-///                  redo Curve25519 scalar mult per call).
-/// `method`         must be uppercase (e.g. `"POST"`).
-/// `path`           must include the leading `/` (e.g. `"/api/remember"`).
-/// `body`           is the raw request body bytes; pass an empty slice for
-///                  requests with no body.
-/// `account_id`     is the MemWal account object ID. Pass `""` when not
-///                  configured — the server then resolves the account from
-///                  the public key via an on-chain registry scan. The value
-///                  passed here MUST match what the caller sends in the
-///                  `x-account-id` header.
-///
-/// A fresh UUID v4 nonce is minted on every call — never re-use one or the
-/// server will reject the request as a replay.
+/// Build the auth headers for one request. Mints a fresh UUID v4 nonce per
+/// call. `method` uppercase, `path` includes the leading `/`, `body` is the
+/// exact bytes that go on the wire (empty slice for GET), `account_id` must
+/// match what's sent as `x-account-id` (or `""` if the header is omitted).
 pub(crate) fn sign_request(
     signing_key: &SigningKey,
     public_key_hex: &str,
