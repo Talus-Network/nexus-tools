@@ -82,25 +82,29 @@ conventions the CI pipeline relies on:
 Once those four pieces are in place, the CI pipeline discovers the
 tool automatically by globbing `offchain/tools/*/tools.json`.
 
-## Branch model
+## Branch & tag model
 
-Three roles:
+Two roles for branches, one for tags:
 
 - **`main`** — dev integration. Tip of `main` is the source of truth
-  for what code exists, but `main` never touches the deployer wallet
-  and never registers FQNs on chain.
-- **`testnet` / `mainnet`** — long-lived deploy branches. Pushes to
-  these fire the full chain pipeline against the corresponding env.
+  for what code exists. Pushes to `main` build + push images to GCR but
+  never touch the deployer wallet and never register FQNs on chain.
 - **`iterate/testnet/<topic>` / `iterate/mainnet/<topic>`** — short-
-  lived deploy branches for iteration. Fire the same full pipeline as
-  the long-lived branches; delete the branch once the deploy settles.
+  lived branches for iterating on the deploy pipeline itself. Push
+  fires the full chain. Delete the branch once the rollout settles.
+- **`testnet-*` / `mainnet-*` tags** — the canonical deploy path. Tag
+  a commit on `main` (for testnet) or any prior testnet-deployed
+  commit (for mainnet), push the tag, and CI runs the full chain
+  against the corresponding env. Tags are immutable, so each
+  deployment is attributable to an exact ref — no merge-strategy
+  gotchas, no long-lived deploy branches to keep clean.
 
 | Trigger | Matrix | Build | Push images | Chain ops | TF apply |
 | --- | --- | --- | --- | --- | --- |
 | PR (any base) | changed | ✓ | dry-run | — | — |
 | Push to `main` | changed | ✓ | ✓ | — | — |
-| Push to `testnet` / `mainnet` | all | ✓ | ✓ | ✓ (env) | ✓ |
 | Push to `iterate/testnet/**` / `iterate/mainnet/**` | all | ✓ | ✓ | ✓ (env) | ✓ |
+| Push tag `testnet-*` / `mainnet-*` | all | ✓ | ✓ | ✓ (tag prefix) | ✓ |
 | `workflow_dispatch` `target-env=testnet\|mainnet` | all | ✓ | ✓ | ✓ (chosen) | ✓ |
 | `workflow_dispatch` `pr-number=<N>` | all | ✓ | ✓ | ✓ (PR's base) | ✓ |
 
@@ -115,19 +119,31 @@ Three roles:
    image is "available" but no Cloud Run service points at it yet and
    no FQN is registered.
 1. **Promote to a deploy env.** Pick one of:
-   - **Long-lived branch merge** — fast-forward (or open another PR)
-     `testnet`/`mainnet` to whichever commit on `main` you want to
-     ship. Push fires the full chain pipeline. Best for steady-state
-     releases.
+   - **Tag deploy (canonical)** — tag a commit and push the tag:
+
+     ~~~bash
+     git tag testnet-v0.1.0 <commit-on-main>
+     git push origin testnet-v0.1.0
+     ~~~
+
+     Tag prefix selects the env (`testnet-*` → testnet, `mainnet-*`
+     → mainnet). The full chain runs against that exact commit, and
+     the tag is an immutable record of what was deployed. Best for
+     anything you'd want to roll back to or audit later.
    - **Iterate branch** — push to `iterate/testnet/<topic>` (or
-     `iterate/mainnet/<topic>`). Fires the same pipeline but doesn't
-     change the long-lived branch history. Best for fast iteration on
-     the deploy itself (the `tf-nexus-tools` side, register-step
-     debugging, etc.).
+     `iterate/mainnet/<topic>`). Fires the same pipeline. Best for
+     fast iteration on the deploy itself (debugging the register
+     step, tf-nexus-tools side, etc.) where you don't want a tag for
+     every attempt.
    - **Manual one-off** — Actions → CI → "Run workflow". Pick
      `target-env=testnet|mainnet`, or pass `pr-number=<N>` to deploy a
-     specific PR's head against the PR's base env. Best when you want
-     to test a not-yet-merged PR end-to-end without cutting a branch.
+     specific PR's head against the PR's base env. Best for ad-hoc
+     deploys without cutting a branch or tag.
+
+   Convention for mainnet promotions: tag should sit on a commit that
+   has already been deployed to testnet (i.e. is reachable from a
+   prior `testnet-*` tag). Not enforced in CI yet — keep it as a
+   review discipline.
 
 After the chosen trigger fires, the full pipeline runs: discover →
 deploy → prepare → register → trigger-tf-apply. `ci-gate` only goes
