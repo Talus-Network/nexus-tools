@@ -132,6 +132,19 @@ jobs:
 
               ENTRY=$(echo "$OUT" | jq -c '.[0]')
               ALREADY=$(echo "$ENTRY" | jq -r '.already_registered // false')
+              ERR=$(echo "$ENTRY" | jq -r '.error // empty')
+
+              # v1.0.0 CLI flags already-registered by string-matching the
+              # outer entry name, but the MoveAbort surfaces from the inner
+              # helper `register_tool_` at instruction 14 (the
+              # EFqnAlreadyExists assertion in tool_registry.move:594), so
+              # the CLI misses it. Treat that exact signature as
+              # already-registered. TODO: fix upstream in nexus-sdk.
+              if [ "$ALREADY" != "true" ] && [ -n "$ERR" ] \
+                 && echo "$ERR" | grep -q 'function_name: Some(Identifier("register_tool_"))' \
+                 && echo "$ERR" | grep -q 'instruction: 14'; then
+                ALREADY="true"
+              fi
 
               if [ "$ALREADY" = "true" ]; then
                 # Caps must already exist in GCS from a prior run; refusing
