@@ -139,6 +139,18 @@ jobs:
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
           NETWORK="${{ vars.SUI_NETWORK }}"
 
+          # Snapshot already-registered FQNs once up front. Each
+          # `nexus tool register` call costs ~1-2s even for an
+          # already-registered FQN (it submits a tx, the Move call
+          # aborts with EFqnAlreadyExists, we detect it and preserve).
+          # Skipping the CLI call entirely for known-registered FQNs
+          # shortens a typical re-run from minutes to seconds.
+          REGISTERED_FQNS="${RUNNER_TEMP}/registered_fqns.txt"
+          nexus tool list --json 2>/dev/null | jq -r '.[].fqn' > "$REGISTERED_FQNS" || true
+          echo "::group::Already-registered FQNs on chain ($(wc -l < "$REGISTERED_FQNS"))"
+          cat "$REGISTERED_FQNS"
+          echo "::endgroup::"
+
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             META="${META_DIR}/${TOOL}.json"
             if [ ! -f "$META" ]; then
@@ -159,6 +171,19 @@ jobs:
             jq -c '.[]' "$META" | while read -r TOOL_META; do
               FQN=$(echo "$TOOL_META" | jq -r '.fqn')
               REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+
+              # Skip the CLI call entirely if the FQN is already
+              # registered on chain (snapshot taken above). We still
+              # verify the GCS file is present so downstream
+              # signing-key / toolkit-config steps don't run blind.
+              if grep -qxF "$FQN" "$REGISTERED_FQNS"; then
+                if ! gsutil -q stat "$REG_PATH" 2>/dev/null; then
+                  echo "::error::$FQN registered on-chain but no caps in GCS ($REG_PATH)"
+                  exit 1
+                fi
+                echo "  ✓ $FQN already registered — skipping CLI call"
+                continue
+              fi
 
               META_URL=$(echo "$TOOL_META" | jq -r '.url')
               # Strip scheme + host:port, keep the path (defaulting to /).
