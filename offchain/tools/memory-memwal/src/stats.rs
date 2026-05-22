@@ -54,7 +54,10 @@ impl NexusTool for StatsForAccount {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!(concat!("xyz.taluslabs.memory.memwal.stats@", env!("TOOL_FQN_VERSION")))
+        fqn!(concat!(
+            "xyz.taluslabs.memory.memwal.stats@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

@@ -62,7 +62,10 @@ impl NexusTool for RememberBulkMemories {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!(concat!("xyz.taluslabs.memory.memwal.remember_bulk@", env!("TOOL_FQN_VERSION")))
+        fqn!(concat!(
+            "xyz.taluslabs.memory.memwal.remember_bulk@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

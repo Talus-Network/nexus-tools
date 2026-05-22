@@ -52,7 +52,10 @@ impl NexusTool for RememberMemory {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!(concat!("xyz.taluslabs.memory.memwal.remember@", env!("TOOL_FQN_VERSION")))
+        fqn!(concat!(
+            "xyz.taluslabs.memory.memwal.remember@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
