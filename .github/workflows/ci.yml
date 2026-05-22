@@ -42,6 +42,23 @@ permissions:
   pull-requests: write
   checks: write
 
+# Serialize chain-touching runs per target network so two pushes can't race on
+# wallet consolidation, register PTBs, or terraform apply locks. Different
+# networks (testnet vs mainnet) run in parallel; PRs (dry-run only) are keyed
+# per-PR; push-to-main (image builds only, no chain ops) is keyed per-ref.
+# `cancel-in-progress: false` queues subsequent runs instead of cancelling —
+# we never want to abandon a half-finished register/apply sequence.
+concurrency:
+  group: >-
+    ${{
+      (startsWith(github.ref_name, 'mainnet-') || startsWith(github.ref_name, 'iterate/mainnet/')) && 'chain-mainnet' ||
+      (startsWith(github.ref_name, 'testnet-') || startsWith(github.ref_name, 'iterate/testnet/')) && 'chain-testnet' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target-env != '') && format('chain-{0}', inputs.target-env) ||
+      github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) ||
+      format('ref-{0}', github.ref)
+    }}
+  cancel-in-progress: false
+
 jobs:
   # ── Resolve target ref for workflow_dispatch with PR# ────────
   resolve-target:
