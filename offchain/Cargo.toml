@@ -14,25 +14,34 @@ keywords = ["nexus", "talus", "tools", "walrus"]
 categories = []
 
 [workspace.dependencies]
-anyhow = "1.0.97"
-base64 = "0.21"
-chrono = { version = "0.4", features = ["serde"] }
-jsonschema = "0.28.3"
-log = "^0.4.26"
-minijinja = "2.8.0"
-mockito = "1.7.0"
+anyhow = "1.0.102"
+base64 = "0.22.1"
+bytes = "1.11.1"
+dotenvy = "0.15.7"
+ed25519-dalek = "2.2.0"
+env_logger = "0.11.10"
+hex = "0.4.3"
+sha2 = "0.11.0"
+chrono = { version = "0.4.44", features = ["serde"] }
+jsonschema = "0.46.5"
+log = "0.4.29"
+minijinja = "2.20.0"
+mockito = "1.7.2"
 portpicker = "0.1.1"
-reqwest = { version = "0.12.25", features = ["json", "stream"] }
-rstest = "0.25.0"
-schemars = "1.0.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serial_test = "3.2.0"
-strum = "0.27"
-strum_macros = "0.27"
-thiserror = "2.0.12"
-tokio = { version = "1.49.0", features = ["full"] }
-warp = "0.3.7"
+reqwest = { version = "0.12.25", features = ["json", "stream", "gzip", "brotli"] }
+rstest = "0.26.1"
+schemars = "1.2.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serial_test = "3.4.0"
+strum = "0.28.0"
+strum_macros = "0.28.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+url = "2.5.8"
+uuid = { version = "1.23.1", features = ["v4"] }
+warp = "0.4.3"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # === Nexus deps ===
 [workspace.dependencies.nexus-sdk]
