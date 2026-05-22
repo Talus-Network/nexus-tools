@@ -8,6 +8,7 @@ use {
     nexus_toolkit::*,
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
+    std::time::Duration,
     thiserror::Error,
 };
 
@@ -68,6 +69,10 @@ impl NexusTool for VerifyBlob {
 
     fn fqn() -> ToolFqn {
         fqn!("xyz.taluslabs.storage.walrus.verify-blob@1")
+    }
+
+    fn timeout() -> Duration {
+        Duration::from_secs(30)
     }
 
     fn path() -> &'static str {

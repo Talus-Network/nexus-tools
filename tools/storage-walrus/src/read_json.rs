@@ -9,6 +9,7 @@ use {
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
     serde_json::Value,
+    std::time::Duration,
     thiserror::Error,
 };
 
@@ -97,6 +98,10 @@ impl NexusTool for ReadJson {
 
     fn fqn() -> ToolFqn {
         fqn!("xyz.taluslabs.storage.walrus.read-json@1")
+    }
+
+    fn timeout() -> Duration {
+        Duration::from_secs(30)
     }
 
     fn path() -> &'static str {

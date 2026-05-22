@@ -12,7 +12,7 @@ use {
     nexus_toolkit::*,
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
-    std::path::PathBuf,
+    std::{path::PathBuf, time::Duration},
     thiserror::Error,
 };
 
@@ -94,6 +94,10 @@ impl NexusTool for UploadFile {
 
     fn fqn() -> ToolFqn {
         fqn!("xyz.taluslabs.storage.walrus.upload-file@1")
+    }
+
+    fn timeout() -> Duration {
+        Duration::from_secs(30)
     }
 
     fn path() -> &'static str {
