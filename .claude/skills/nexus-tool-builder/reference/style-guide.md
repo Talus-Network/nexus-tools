@@ -6,7 +6,9 @@ Distilled from `Talus-Network/nexus-sdk/docs/tool-development.md`.
 
 - All port names (Input Ports, Output Variants, Output Ports) are
   `snake_case`. Never `camelCase` / `PascalCase` / `APIKey`.
-- Names are descriptive and concise: `api_key`, not `k` or `apk`.
+- Names are descriptive and concise: `payment_intent_id`, not `pi` or `id`.
+  (Note: `api_key`, `bearer_token`, and other credential-shaped names are
+  forbidden anywhere on `Input` — see `security-checklist.md` §C1.)
 - Erroneous output variants start with `err`: `err`, `err_http`, `err_quota`.
   Never `error`, `failure`, `http_exception`.
 

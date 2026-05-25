@@ -1,0 +1,45 @@
+name: Install Sui CLI
+description: Install the Sui CLI from suiup, with cache support
+inputs:
+  sui-channel:
+    description: 'Sui release channel (e.g. testnet, mainnet)'
+    required: true
+  cache-version:
+    description: 'Bump to invalidate the cache'
+    required: false
+    default: 'v1'
+runs:
+  using: composite
+  steps:
+    - name: Cache Sui binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/sui
+        key: sui-${{ runner.os }}-${{ inputs.sui-channel }}-${{ inputs.cache-version }}
+
+    - name: Install suiup and Sui CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SUI_CHANNEL: ${{ inputs.sui-channel }}
+      run: |
+        set -euo pipefail
+        install_dir="$HOME/.local/bin"
+        temp_dir="$(mktemp -d)"
+        mkdir -p "$install_dir"
+        curl --retry 5 --retry-all-errors -sSfL \
+          -o "$temp_dir/suiup.tar.gz" \
+          https://github.com/MystenLabs/suiup/releases/latest/download/suiup-Linux-musl-x86_64.tar.gz
+        tar -xzf "$temp_dir/suiup.tar.gz" -C "$temp_dir"
+        install -m 0755 "$temp_dir/suiup" "$install_dir/suiup"
+        "$install_dir/suiup" install "sui@$SUI_CHANNEL" -y
+
+    - name: Add Sui to PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify
+      shell: bash
+      run: sui --version

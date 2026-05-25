@@ -2,23 +2,25 @@
 //!
 //! {{endpoint_description}}
 //!
+//! ## Credential contract
+//!
+//! Upstream credentials come from the process environment
+//! (`{{SERVICE_UPPER}}_API_KEY`), read once at startup by
+//! `{{ServicePascal}}Client::from_env`. They are NEVER fields on `Input`
+//! — tool inputs flow through the Nexus DAG on Sui as plaintext, so any
+//! credential-shaped Input field is effectively published on-chain.
+//!
 //! ## Statelessness contract
 //!
 //! Per the `nexus-toolkit` contract, `new()` is called on every request.
-//! This tool MUST be stateless across invocations:
+//! This tool MUST be stateless w.r.t. request data:
 //!
-//! - No `static` / `lazy_static` / `OnceLock` storing per-request data.
-//! - No `Mutex` / `RwLock` / `Cell` / `RefCell` accumulating state.
+//! - No mutable per-request state in `static` / `lazy_static` /
+//!   `Mutex` / `RwLock` / `Cell` / `RefCell`.
 //! - No on-disk writes outside `#[cfg(test)]`.
-//! - The struct's only fields are configuration / clones of a stateless
-//!   `reqwest::Client` pool. Same input + same `Input.api_key` ⇒
-//!   identical upstream call.
-//!
-//! ## Credential contract
-//!
-//! Upstream API credentials live ONLY in the `Input` struct, passed by
-//! the DAG / Leader per invocation. This tool never reads credentials
-//! from env vars, files, or any persistent store.
+//! - The struct's only field is a cheap-to-clone `{{ServicePascal}}Client`
+//!   (shared HTTP pool + Arc-wrapped bearer). Same input ⇒ identical
+//!   upstream call.
 
 use {
     crate::{
@@ -31,19 +33,19 @@ use {
     serde::{Deserialize, Serialize},
 };
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    /// {{ServicePascal}} secret key passed in by the DAG / Leader.
-    /// NEVER set this as a `default_values` entry in the on-chain DAG —
-    /// values committed to Sui are public and permanent. The Leader
-    /// supplies this at execution time from its secret store.
-    pub api_key: String,
-
+    // **NO credential-shaped fields.** Do not add `api_key`, `bearer`,
+    // `secret`, `token`, `password`, `private_key`, `access_token`,
+    // `consumer_secret`, or `client_secret`. The auditor's C1 check
+    // refuses to mark the tool ready if it finds one. Credentials come
+    // from `{{SERVICE_UPPER}}_API_KEY` env var.
     {{#if is_write}}
     /// Optional `Idempotency-Key` header. Generate a UUID per logical
     /// retry-bucket in your DAG; reusing the same key returns the same
-    /// upstream response without double-charging.
+    /// upstream response without double-charging. This is NOT a credential
+    /// — it's per-call dedup data.
     pub idempotency_key: Option<String>,
 
     {{/if}}
@@ -53,8 +55,7 @@ pub(crate) struct Input {
     //   - snake_case
     //   - optional fields use Option<T>
     //   - split paired fields (prompt + context) into separate ports
-    //   - never derive Debug on Input — it would log api_key. Use a
-    //     manual Debug impl that redacts credential fields if needed.
+    //   - Debug is fine to derive — there are no credentials in Input
     /// {{example_input_doc}}
     pub {{example_input_name}}: String,
 }
@@ -75,8 +76,9 @@ pub(crate) enum Output {
     },
 }
 
-/// Stateless: holds only a stateless connection pool. `new()` may be
-/// called per request without performance penalty.
+/// Stateless: holds only a cheap-to-clone `{{ServicePascal}}Client`.
+/// `new()` constructs from env every request; the shared HTTP pool and
+/// startup-validated bearer are cached.
 pub(crate) struct {{EndpointPascal}} {
     client: {{ServicePascal}}Client,
 }
@@ -87,12 +89,16 @@ impl NexusTool for {{EndpointPascal}} {
 
     async fn new() -> Self {
         Self {
-            client: {{ServicePascal}}Client::new(None),
+            client: {{ServicePascal}}Client::from_env().unwrap_or_else(|e| {
+                log::error!("{{crate_name}} configuration invalid: {e}");
+                panic!("{{crate_name}} configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("{{fqn}}")
+        // CI bumps TOOL_FQN_VERSION on every source change (subtree git hash).
+        fqn!(concat!("{{fqn_no_version}}@", env!("TOOL_FQN_VERSION")))
     }
 
     fn path() -> &'static str {
@@ -108,15 +114,15 @@ impl NexusTool for {{EndpointPascal}} {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        // Build a per-call authed client; the credential lives only in
-        // this function's scope and goes out of scope when invoke returns.
-        let client = self.client.clone().with_auth(&input.api_key);
-
+        // Client is already authed from startup env var. Cheap clone for
+        // per-request mutations (idempotency key).
         {{#if is_write}}
         let client = match input.idempotency_key {
-            Some(ref k) => client.with_idempotency(k),
-            None => client,
+            Some(ref k) => self.client.clone().with_idempotency(k),
+            None => self.client.clone(),
         };
+        {{else}}
+        let client = &self.client;
         {{/if}}
 
         let endpoint = format!("{{endpoint_path_template}}", input.{{example_input_name}});
@@ -143,15 +149,14 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, {{EndpointPascal}}) {
         let server = Server::new_async().await;
-        let client = {{ServicePascal}}Client::new(Some(&server.url()));
+        // Bypass env-var validation: inject a test bearer directly.
+        let client = {{ServicePascal}}Client::for_testing(&server.url(), "sk_test_FAKE_FOR_TESTS_ONLY");
         let tool = {{EndpointPascal}} { client };
         (server, tool)
     }
 
     fn test_input({{example_input_name}}: &str) -> Input {
         Input {
-            // Test-mode key only — fixtures must never contain `sk_live_…`.
-            api_key: "sk_test_FAKE_FOR_TESTS_ONLY".to_string(),
             {{#if is_write}}
             idempotency_key: None,
             {{/if}}

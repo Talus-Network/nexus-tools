@@ -1,0 +1,30 @@
+[package]
+name = "math"
+description = "Set of Nexus Tools for math operations."
+
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "math"
+path = "src/main.rs"
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+# === Nexus deps ===
+nexus-toolkit.workspace = true
+nexus-sdk.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"

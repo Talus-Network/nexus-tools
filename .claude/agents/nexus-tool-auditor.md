@@ -37,8 +37,8 @@ fixes for clear-cut issues. It must NOT:
 
 ## Inputs (collect explicitly before starting)
 
-- **`crate_path`**: absolute path to the crate (e.g. `tools/<name>` for
-  off-chain, the Move package root for on-chain).
+- **`crate_path`**: absolute path to the crate (e.g. `offchain/tools/<name>`
+  for off-chain, the Move package root for on-chain).
 - **`kind`**: `off-chain` | `on-chain`. Infer from the presence of
   `Cargo.toml` vs `Move.toml`.
 - **`severity_floor`**: `info` | `low` | `medium` | `high` | `critical`.
@@ -50,6 +50,31 @@ fixes for clear-cut issues. It must NOT:
 Read `reference/security-checklist.md` from
 `.claude/skills/nexus-tool-builder/reference/` before starting — that file
 is the authoritative list of checks. Don't re-derive them.
+
+## Hard rule — automatic CRITICAL, always blocks promotion
+
+**Any field in any `Input` struct whose name (case-insensitive)** contains
+`api_key`, `apikey`, `secret`, `password`, `private_key`, `bearer`,
+`access_token`, `consumer_key`, `consumer_secret`, `client_secret`, ends
+with `_token`, or is exactly `token` / `key` — **with the curated
+whitelist exceptions** `idempotency_key`, `pagination_token`,
+`page_token`, `cursor_token`, `next_token`, `continuation_token`,
+`refresh_cursor` — **is an automatic CRITICAL finding** (checklist
+**C1**). The tool MUST NOT receive `ready-for-testnet` or
+`ready-for-mainnet` until the field is removed and the credential moves to
+a startup-time env-var read.
+
+This rule overrides every other consideration. The credential reaches Sui
+the first time the DAG runs, and that is irreversible. The auditor MUST
+report `block` and refuse to promote, even if the user asks for testnet
+only.
+
+The `audit.sh` script emits this as `FAIL static:input-credential`.
+Cross-check by reading every `Input` struct yourself — the static check
+uses a brace-balanced parser but you should not rely on it alone.
+
+Canonical fix pattern: lift the credential into an env var read at
+startup. Reference: `offchain/tools/memory-memwal/src/client.rs::from_env`.
 
 ## Off-chain Rust audit
 
@@ -70,10 +95,17 @@ The script wraps:
 - `cargo +stable test --no-run` (does the test suite compile?)
 - `cargo audit` (RustSec advisories — install if missing)
 - `cargo deny check` (uses repo's `deny.toml`)
+- `static:input-credential` (the C1 hard rule above)
 - Grep checks: `unwrap()` / `expect()` / `panic!` inside `async fn invoke`,
   hardcoded secrets, `println!` / `dbg!` in non-test code,
   `danger_accept_invalid_certs`, raw `reqwest::Client::new()` without a
   user-agent
+- `tools.json` shape: `tool_name == command == [[bin]].name`; no
+  secret-looking keys in `environment` (C10).
+- Legacy plumbing left behind: refuse if any of `<crate>/deploy/`,
+  `<crate>/paths.json`, or per-tool `deploy-<crate>-{testnet,mainnet}.yml`
+  workflow files still exist — they're superseded by the shared
+  `offchain-tools.*` pipeline.
 
 Read each finding. Classify severity.
 
@@ -87,12 +119,28 @@ Read `src/main.rs` and every file in `src/tools/`. Verify:
   top-level `oneOf` — if uncertain, write a one-off test that dumps the
   schema and asserts the shape.
 - Every `Input` has `#[serde(deny_unknown_fields)]`.
+- **Every `Input` is free of credential-shaped fields (the C1 hard rule
+  above).** Cross-check the audit script's report by reading each Input
+  yourself.
 - Error variants are named with the `err` prefix.
 - Crucial response fields are NOT behind `Option<T>` — return `Err`
   instead.
 - `description()` is overridden (non-empty).
 - `timeout()` is reasonable (< Leader request budget; > expected upstream
   latency × 2).
+- FQNs are threaded through `env!("TOOL_FQN_VERSION")` —
+  `fqn!(concat!("xyz.taluslabs....", "@", env!("TOOL_FQN_VERSION")))`. CI
+  bumps `TOOL_FQN_VERSION` from the tool's subtree git hash, so a bare
+  `@1` literal stays at `@1` forever and DAGs break.
+- The crate's `<service>_client.rs` (or equivalent) reads upstream
+  credentials from env via `from_env`, wraps in `Zeroizing<String>`, and
+  hand-implements `Debug` to print `<redacted>` — no `#[derive(Debug)]` on
+  the credential-bearing struct.
+- `main` runs `load_dotenv_if_present()` and
+  `validate_credentials_at_startup()` BEFORE building the tokio runtime
+  (`set_var` is unsound from a multi-threaded process).
+- `main` short-circuits on `--meta` so CI's prepare step can pull `/meta`
+  from an image with no env.
 
 ### 3. Information disclosure
 
@@ -120,10 +168,10 @@ tool. Expectations:
 
 ### 5. Behavioral backtest
 
-If `tools/<crate>/fixtures/` exists, replay every recorded response
-through the tool with `mockito::Server` and assert the `Output` matches a
-golden file. If no fixtures exist, propose creating them from the
-canonical happy-path tests.
+If `offchain/tools/<crate>/fixtures/` exists, replay every recorded
+response through the tool with `mockito::Server` and assert the `Output`
+matches a golden file. If no fixtures exist, propose creating them from
+the canonical happy-path tests.
 
 ### 6. Dependency hygiene
 
@@ -224,7 +272,7 @@ Read `Move.toml`. Check:
 
 ## Report format
 
-Write the report to `tools/<crate>/AUDIT.md` (off-chain) or
+Write the report to `offchain/tools/<crate>/AUDIT.md` (off-chain) or
 `<crate>/AUDIT.md` (on-chain), overwriting any previous version. Format:
 
 ```markdown
@@ -277,11 +325,17 @@ Memory peak: <N> MiB
 
 ## Conformance checklist
 
+- [ ] **No credential-shaped fields in any Input (C1)** — automatic
+      CRITICAL if violated
 - [ ] Output is enum with snake_case rename
 - [ ] Input has deny_unknown_fields
 - [ ] All paths unique
 - [ ] description() set
+- [ ] FQN threaded through env!("TOOL_FQN_VERSION")
 - [ ] No leaking error reasons
+- [ ] Credentials read from env at startup; Zeroizing wrapper; redacting Debug
+- [ ] tools.json present; tool_name == command == [[bin]].name
+- [ ] No legacy per-tool deploy/ or workflow files
 - [ ] (on-chain) Worksheet stamped on every path
 - [ ] (on-chain) All entry functions authorized
 - [ ] …

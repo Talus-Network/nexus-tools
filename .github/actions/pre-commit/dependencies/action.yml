@@ -20,4 +20,4 @@ runs:
 
     - name: Install NPM stuff from helpers/npm-install-g.txt
       shell: bash
-      run: ./helpers/npm-install-g.sh
+      run: ./offchain/helpers/npm-install-g.sh

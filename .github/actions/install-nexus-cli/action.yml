@@ -1,0 +1,29 @@
+name: Install Nexus CLI
+description: Extract the nexus CLI from the nexus-sdk shell image
+inputs:
+  nexus-tag:
+    description: 'Tag of gcr.io/.../nexus-sdk/shell to extract from'
+    required: true
+  infra-registry:
+    description: 'Infra GCR registry prefix (e.g. gcr.io/production-tf-talus-infra)'
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Extract nexus binary
+      shell: bash
+      env:
+        NEXUS_TAG: ${{ inputs.nexus-tag }}
+        INFRA_REGISTRY: ${{ inputs.infra-registry }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.local/bin"
+        CONTAINER_ID=$(docker create "${INFRA_REGISTRY}/nexus-sdk/shell:${NEXUS_TAG}")
+        docker cp "${CONTAINER_ID}:/usr/local/bin/nexus" "$HOME/.local/bin/nexus"
+        docker rm "${CONTAINER_ID}"
+        chmod +x "$HOME/.local/bin/nexus"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify
+      shell: bash
+      run: nexus --version
