@@ -1,0 +1,7 @@
+{
+  "tool_name": "templating-jinja",
+  "command": "templating-jinja",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}

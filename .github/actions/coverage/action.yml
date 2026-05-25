@@ -59,8 +59,9 @@ runs:
 
     - name: Generate Coverage
       shell: bash
+      working-directory: offchain
       run: |
-        cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        cargo llvm-cov --all-features --workspace --lcov --output-path ../lcov.info
       env:
         CARGO_TERM_COLOR: always
         CACHE_ON_FAILURE: true

@@ -1,0 +1,7 @@
+{
+  "tool_name": "llm-openai-chat-completion",
+  "command": "llm-openai-chat-completion",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}

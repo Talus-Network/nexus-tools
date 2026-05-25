@@ -9,7 +9,9 @@ jobs:
     uses: ./.github/workflows/detect_changes.yml
     with:
       files: |
-        tools/**
+        offchain/tools/**
+        offchain/Cargo.toml
+        offchain/Cargo.lock
   coverage:
     runs-on: ubuntu-latest
     needs: detect-changes
