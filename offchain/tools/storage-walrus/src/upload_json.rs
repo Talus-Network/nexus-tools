@@ -170,9 +170,10 @@ impl UploadJson {
             .build()
             .await;
 
-        let storage_info = walrus_client
-            .upload_json(&input.json, input.epochs, input.send_to_address)
-            .await?;
+        let storage_info = crate::client::with_publisher_retry(|| {
+            walrus_client.upload_json(&input.json, input.epochs, input.send_to_address.clone())
+        })
+        .await?;
 
         Ok(storage_info)
     }
