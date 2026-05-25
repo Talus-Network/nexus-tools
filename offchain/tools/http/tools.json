@@ -1,0 +1,7 @@
+{
+  "tool_name": "http",
+  "command": "http",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}
