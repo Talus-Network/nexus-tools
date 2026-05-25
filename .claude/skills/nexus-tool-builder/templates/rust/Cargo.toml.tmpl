@@ -12,14 +12,23 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "{{crate_name}}"
+path = "src/main.rs"
+
 [dependencies]
+anyhow.workspace = true
 chrono.workspace = true
+dotenvy.workspace = true
+env_logger.workspace = true
+log.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-serde_json.workspace = true
-serde.workspace = true
-schemars.workspace = true
+zeroize.workspace = true
 
 # === Nexus deps ===
 nexus-toolkit.workspace = true
@@ -27,3 +36,7 @@ nexus-sdk.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"

@@ -5,14 +5,14 @@ Source: `nexus-sdk/toolkit-rust/src/nexus_tool.rs`.
 ## Required associated types
 
 | Type | Constraints | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `Input` | `JsonSchema + DeserializeOwned + Send` | Generates the input schema. Deserialized from the request body. |
 | `Output` | `JsonSchema + Serialize + Send`, **must be a Rust `enum`** so the schema gets a top-level `oneOf` | Generates the output schema. Serialized into the response. |
 
 ## Required methods
 
 | Method | Signature | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `fqn` | `fn fqn() -> ToolFqn` | Use the `fqn!("xyz.taluslabs.<category>.<service>.<endpoint>@1")` macro. |
 | `new` | `async fn new() -> Self` | Called per request. Inject dependencies here. |
 | `invoke` | `async fn invoke(&self, input: Self::Input) -> Self::Output` | Main logic. **No `Result`** — errors go in `Output::Err`. |
@@ -21,7 +21,7 @@ Source: `nexus-sdk/toolkit-rust/src/nexus_tool.rs`.
 ## Optional methods (have defaults)
 
 | Method | Default | When to override |
-|---|---|---|
+| --- | --- | --- |
 | `path` | `""` (root) | When multiple tools live in one crate — each needs a unique path. |
 | `description` | `""` | Always — surfaces in `/meta`. |
 | `timeout` | `Duration::from_secs(10)` | Override for slow upstreams; keep below the Leader's request budget. |
@@ -30,7 +30,7 @@ Source: `nexus-sdk/toolkit-rust/src/nexus_tool.rs`.
 ## Generated endpoints (from `NexusTool` impl)
 
 | Endpoint | Body |
-|---|---|
+| --- | --- |
 | `GET <path>/health` | Status code returned by `health()`. |
 | `GET <path>/meta` | JSON: `{ fqn, url, timeout, description, input_schema, output_schema }`. |
 | `POST <path>/invoke` | Deserializes body as `Input`, calls `invoke`, serializes the result as `Output`. |
