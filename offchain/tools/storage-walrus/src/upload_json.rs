@@ -12,6 +12,7 @@ use {
     nexus_toolkit::*,
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
+    std::time::Duration,
     thiserror::Error,
 };
 
@@ -102,6 +103,10 @@ impl NexusTool for UploadJson {
             "xyz.taluslabs.storage.walrus.upload-json@",
             env!("TOOL_FQN_VERSION")
         ))
+    }
+
+    fn timeout() -> Duration {
+        Duration::from_secs(30)
     }
 
     fn path() -> &'static str {
