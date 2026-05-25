@@ -1,0 +1,409 @@
+name: Offchain Tools Register
+
+on:
+  workflow_call:
+    inputs:
+      target-ref:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  register:
+    name: Register offchain tools
+    runs-on: ubuntu-latest
+    environment: >-
+      ${{
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        'testnet'
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Sui CLI
+        uses: ./.github/actions/install-sui
+        with:
+          sui-channel: ${{ vars.SUI_CHANNEL }}
+          cache-version: ${{ vars.SUI_CACHE_VERSION }}
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: offchain-tools-prepare
+          path: ${{ runner.temp }}/prepare
+
+      - name: Show artifacts
+        id: artifacts
+        run: |
+          PREPARE="${{ runner.temp }}/prepare"
+          echo "manifest=${PREPARE}/manifest.json" >> "$GITHUB_OUTPUT"
+          echo "meta_dir=${PREPARE}/meta" >> "$GITHUB_OUTPUT"
+          jq . "${PREPARE}/manifest.json"
+
+      - name: Authenticate to GCP (protocol)
+        id: auth-gcs
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools
+
+      - name: Authenticate to GCP (infra)
+        uses: ./.github/actions/gcp-auth-infra
+        with:
+          project-id: ${{ vars.GCP_INFRA_PROJECT_ID }}
+          project-number: ${{ vars.GCP_INFRA_PROJECT_NUMBER }}
+          provider-name: nexus-tools
+
+      - name: Install Nexus CLI
+        uses: ./.github/actions/install-nexus-cli
+        with:
+          nexus-tag: ${{ vars.NEXUS_TAG }}
+          infra-registry: gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}
+
+      - name: Configure wallet and Nexus
+        run: |
+          set -euo pipefail
+          yes "" | sui client new-env --alias tool-register --rpc "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" || true
+          sui client switch --env tool-register
+
+          # SUI_DEPLOYER_PK is a `suiprivkey...` bech32 string (sui keytool
+          # export format). Same secret will drive future onchain Move
+          # deploys (`sui client publish`).
+          IMPORT=$(sui keytool import "${{ secrets.SUI_DEPLOYER_PK }}" ed25519)
+          ADDR=$(echo "$IMPORT" | grep -oE '0x[0-9a-fA-F]{64}')
+          sui client switch --address "$ADDR"
+          echo "DEPLOYER_ADDR=$ADDR" >> "$GITHUB_ENV"
+
+          KEY_INDEX=$(sui keytool list --json | jq -r --arg addr "$ADDR" 'to_entries[] | select(.value.suiAddress == $addr) | .key')
+          SUI_PK=$(jq -r --argjson idx "$KEY_INDEX" '.[$idx]' "$HOME/.sui/sui_config/sui.keystore")
+
+          NETWORK="${{ vars.SUI_NETWORK }}"
+          wget -q -O "$RUNNER_TEMP/objects.toml" \
+            "https://storage.googleapis.com/production-talus-sui-objects/${{ vars.NEXUS_TAG }}/objects.${NETWORK}.toml?t=$(date +%s)"
+
+          mkdir -p "$HOME/.nexus"
+          cp "$RUNNER_TEMP/objects.toml" "$HOME/.nexus/objects.${NETWORK}.toml"
+          nexus conf set \
+            --nexus.objects "$HOME/.nexus/objects.${NETWORK}.toml" \
+            --sui.rpc-url "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" \
+            --sui.pk "$SUI_PK"
+
+      - name: Consolidate wallet gas coins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Merge most coins into one big primary so the register loop
+          # has enough headroom for budgets up to ~1 SUI per call
+          # (static deploy needed 1e9 MIST for heavy twitter schemas).
+          # Leaves a tiny leftover so we still have a distinct
+          # collateral coin per call.
+          echo "::group::wallet before consolidation"
+          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          echo "::endgroup::"
+
+          # Target 4 coins so we have headroom for several register
+          # calls in parallel and across drain. Merge the two smallest
+          # each iteration; this levels small fragments up rather than
+          # leaving 1 huge + 3 small (which can't cover the 1 SUI
+          # budget for heavy schemas).
+          MAX_MERGES=40
+          i=0
+          while [ "$(sui client gas --json | jq 'length')" -gt 4 ] && [ "$i" -lt "$MAX_MERGES" ]; do
+            INFO=$(sui client gas --json)
+            TO_MERGE=$(echo "$INFO" | jq -r 'sort_by(.mistBalance|tonumber) | .[0].gasCoinId')
+            PRIMARY=$(echo "$INFO"  | jq -r 'sort_by(.mistBalance|tonumber) | .[1].gasCoinId')
+            echo "merge[$i]: $TO_MERGE -> $PRIMARY"
+            sui client merge-coin \
+              --primary-coin "$PRIMARY" \
+              --coin-to-merge "$TO_MERGE" \
+              --gas-budget 5000000 >/dev/null
+            i=$((i+1))
+          done
+
+          echo "::group::wallet after consolidation"
+          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          echo "::endgroup::"
+
+      - name: Register offchain tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          # Snapshot already-registered FQNs once up front. Each
+          # `nexus tool register` call costs ~1-2s even for an
+          # already-registered FQN (it submits a tx, the Move call
+          # aborts with EFqnAlreadyExists, we detect it and preserve).
+          # Skipping the CLI call entirely for known-registered FQNs
+          # shortens a typical re-run from minutes to seconds.
+          REGISTERED_FQNS="${RUNNER_TEMP}/registered_fqns.txt"
+          nexus tool list --json 2>/dev/null | jq -r '.[].fqn' > "$REGISTERED_FQNS" || true
+          echo "::group::Already-registered FQNs on chain ($(wc -l < "$REGISTERED_FQNS"))"
+          cat "$REGISTERED_FQNS"
+          echo "::endgroup::"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            META="${META_DIR}/${TOOL}.json"
+            if [ ! -f "$META" ]; then
+              echo "::error::Meta file not found: $META"
+              ls -la "$META_DIR" >&2 || true
+              exit 1
+            fi
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            TOOL_HOST="${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+            echo "=== TOOL=$TOOL VERSION=$VERSION HOST=$TOOL_HOST ==="
+
+            # Each tool binary's --meta emits an array of ToolMeta (one per
+            # FQN). The CLI's --from-meta takes a single ToolMeta on stdin,
+            # so iterate and pipe each entry. Each FQN has its own URL
+            # *path* (e.g. /i64/add/) baked into the meta — we keep that
+            # path and only swap the host from the in-container BIND_ADDR
+            # to the external internal-DNS hostname.
+            jq -c '.[]' "$META" | while read -r TOOL_META; do
+              FQN=$(echo "$TOOL_META" | jq -r '.fqn')
+              REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+
+              # Skip the CLI call entirely if the FQN is already
+              # registered on chain (snapshot taken above). We still
+              # verify the GCS file is present so downstream
+              # signing-key / toolkit-config steps don't run blind.
+              if grep -qxF "$FQN" "$REGISTERED_FQNS"; then
+                if ! gsutil -q stat "$REG_PATH" 2>/dev/null; then
+                  echo "::error::$FQN registered on-chain but no caps in GCS ($REG_PATH)"
+                  exit 1
+                fi
+                echo "  ✓ $FQN already registered — skipping CLI call"
+                continue
+              fi
+
+              META_URL=$(echo "$TOOL_META" | jq -r '.url')
+              # Strip scheme + host:port, keep the path (defaulting to /).
+              URL_PATH=$(echo "$META_URL" | sed -E 's|^[a-z]+://[^/]*||')
+              [ -z "$URL_PATH" ] && URL_PATH="/"
+              # Leader appends `invoke` via RFC 3986 relative-URL join:
+              #   /i64/add/  + invoke = /i64/add/invoke ✓
+              #   /i64/add   + invoke = /invoke        ✗
+              # Force a trailing slash so the join produces the right
+              # endpoint, matching the legacy v0.8 static-deploy URLs.
+              [ "${URL_PATH: -1}" != "/" ] && URL_PATH="${URL_PATH}/"
+              TOOL_URL="http://${TOOL_HOST}${URL_PATH}"
+
+              # The CLI's gas pool is a single coin picked at startup
+              # (sui.rs:294 `with_gas(vec![one_coin])`); reusing the same
+              # coin across many CLI invocations drains it below the
+              # 100M budget and yields InsufficientGas. Re-query the
+              # wallet per call and pin the largest coin as gas and
+              # smallest (distinct) coin as collateral — fresh object
+              # refs every call, no chance of overlap.
+              GAS_INFO=$(sui client gas --json)
+              echo "::group::wallet coins before $FQN"
+              echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+              echo "$GAS_INFO" | jq 'length as $n | (map(.mistBalance|tonumber) | add) as $sum | {coin_count: $n, total_mist: $sum, total_sui: ($sum/1000000000)}'
+              echo "::endgroup::"
+              GAS_BUDGET=1000000000
+              # Pick any coin with balance ≥ budget — preferring the
+              # largest, but rotating to a different one if the previous
+              # call drained the prior-largest below budget. Sui rejects
+              # at validation (not execution) when the gas coin can't
+              # cover the budget reservation, so this guard saves us
+              # from opaque RPC errors and from staying stuck on a
+              # drained coin while others in the wallet still have
+              # plenty.
+              GAS_COIN=$(echo "$GAS_INFO" | jq -r --argjson b "$GAS_BUDGET" \
+                'map(select((.mistBalance|tonumber) >= $b))
+                 | sort_by(.mistBalance|tonumber) | last.gasCoinId // empty')
+              if [ -z "$GAS_COIN" ]; then
+                echo "::error::No coin in wallet has balance ≥ $GAS_BUDGET MIST."
+                echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+                exit 1
+              fi
+              GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
+              # Collateral can be any other coin (split is 1 MIST), so
+              # take the smallest one not chosen as gas.
+              COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
+                'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId // empty')
+              if [ -z "$COLL_COIN" ]; then
+                echo "::error::Wallet has only one coin; need ≥2 (gas + collateral)"
+                exit 1
+              fi
+              COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
+              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST) budget=$GAS_BUDGET"
+
+              echo "::group::CLI invocation for $FQN"
+              echo "  url: $TOOL_URL"
+              echo "  tool_meta: $(echo "$TOOL_META" | jq -c '{fqn, url, timeout, description: (.description|.[0:40])}')"
+              echo "::endgroup::"
+
+              STDERR_LOG="${RUNNER_TEMP}/nexus-register.stderr"
+              set +e
+              # Heavy schemas (twitter get-tweet, llm chat-completion)
+              # need ~1 SUI of gas to cover storage; the proven value
+              # from the prior static deploy
+              # (tf-talus-nexus-v2 social-twitter.json:gasBudgetAmount).
+              # Pre-consolidated wallet coins (above) cover this.
+              OUT=$(echo "$TOOL_META" \
+                | nexus tool register offchain \
+                    --from-meta - \
+                    --url "$TOOL_URL" \
+                    --sui-gas-coin "$GAS_COIN" \
+                    --collateral-coin "$COLL_COIN" \
+                    --sui-gas-budget "$GAS_BUDGET" \
+                    --invocation-cost 0 \
+                    --no-save \
+                    --json 2>"$STDERR_LOG")
+              RC=$?
+              set -e
+              echo "::group::CLI stderr for $FQN (rc=$RC)"
+              cat "$STDERR_LOG" || true
+              echo "::endgroup::"
+              echo "::group::CLI stdout for $FQN"
+              echo "$OUT"
+              echo "::endgroup::"
+              if [ $RC -ne 0 ]; then
+                echo "::error::nexus CLI exited $RC for $FQN"
+                exit $RC
+              fi
+
+              ENTRY=$(echo "$OUT" | jq -c '.[0]')
+              ALREADY=$(echo "$ENTRY" | jq -r '.already_registered // false')
+              ERR=$(echo "$ENTRY" | jq -r '.error // empty')
+
+              # v1.0.0 CLI flags already-registered by string-matching the
+              # outer entry name, but the MoveAbort surfaces from the inner
+              # helper `register_tool_` at instruction 14 (the
+              # EFqnAlreadyExists assertion in tool_registry.move:594), so
+              # the CLI misses it. Treat that exact signature as
+              # already-registered. TODO: fix upstream in nexus-sdk.
+              if [ "$ALREADY" != "true" ] && [ -n "$ERR" ] \
+                 && echo "$ERR" | grep -q 'function_name: Some(Identifier("register_tool_"))' \
+                 && echo "$ERR" | grep -q 'instruction: 14'; then
+                ALREADY="true"
+              fi
+
+              if [ "$ALREADY" = "true" ]; then
+                # Caps must already exist in GCS from a prior run; refusing
+                # to proceed when they're missing keeps downstream steps
+                # (signing keys, toolkit-config) from running blind.
+                if ! gsutil -q stat "$REG_PATH" 2>/dev/null; then
+                  echo "::error::$FQN registered on-chain but no caps in GCS ($REG_PATH)"
+                  exit 1
+                fi
+                echo "  ✓ $FQN already registered — caps preserved"
+                continue
+              fi
+
+              TOOL_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_tool_id // empty')
+              GAS_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_gas_id // empty')
+              if [ -z "$TOOL_CAP" ] || [ -z "$GAS_CAP" ]; then
+                echo "::error::register output missing caps for $FQN: $ENTRY"
+                exit 1
+              fi
+
+              # Merge with any existing record so downstream-added fields
+              # (signing_key_hash, tool_kid) survive re-registration.
+              EXISTING=$(gsutil cat "$REG_PATH" 2>/dev/null || echo '{}')
+              echo "$EXISTING" | jq \
+                --arg fqn "$FQN" --arg t "$TOOL_CAP" --arg g "$GAS_CAP" \
+                '. + {fqn: $fqn, owner_cap_over_tool: $t, owner_cap_over_gas: $g}' \
+                | gsutil cp - "$REG_PATH"
+              echo "  + $FQN registered (tool_cap=$TOOL_CAP gas_cap=$GAS_CAP)"
+            done
+          done
+
+      - name: Register signing keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            VERSIONED="${TOOL}-v${VERSION}"
+
+            KEYS=$(gcloud secrets versions access latest \
+              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --project="$PROJECT")
+            KEYS_HASH=$(echo "$KEYS" | jq -c '[.keys_registry[] | {fqn, public_key_hex}]' | sha256sum | cut -c1-16)
+
+            for FQN in $(jq -r '.[].fqn' "${META_DIR}/${TOOL}.json"); do
+              REG=$(gsutil cat "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json")
+              OWNER_CAP=$(echo "$REG" | jq -r '.owner_cap_over_tool')
+              REGISTERED_HASH=$(echo "$REG" | jq -r '.signing_key_hash // ""')
+              if [ "$REGISTERED_HASH" = "$KEYS_HASH" ]; then
+                echo "  ✓ $FQN signing key unchanged — skipping"
+                continue
+              fi
+
+              PRIVATE_KEY=$(echo "$KEYS" | jq -re --arg f "$FQN" '.keys_registry[] | select(.fqn == $f) | .private_key_hex')
+              REG_OUT=$(nexus tool auth register-key \
+                --json \
+                --tool-fqn "$FQN" \
+                --owner-cap "$OWNER_CAP" \
+                --signing-key "$PRIVATE_KEY" \
+                --description "ci-managed")
+              KID=$(echo "$REG_OUT" | jq -r '.tool_kid')
+
+              echo "$REG" | jq --arg h "$KEYS_HASH" --argjson kid "$KID" \
+                '. + {signing_key_hash: $h, tool_kid: $kid}' \
+                | gsutil cp - "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
+              echo "  + $FQN registered with tool_kid=$KID"
+            done
+          done
+
+      - name: Reconcile toolkit-config secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.artifacts.outputs.manifest }}"
+          META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
+          NETWORK="${{ vars.SUI_NETWORK }}"
+
+          for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
+            VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
+            VERSIONED="${TOOL}-v${VERSION}"
+            SECRET="nexus-tools-${VERSIONED}-signed-http-toolkit-config"
+
+            gcloud secrets describe "$SECRET" --project="$PROJECT" >/dev/null 2>&1 \
+              || gcloud secrets create "$SECRET" --project="$PROJECT" --replication-policy=automatic
+
+            SKELETON=$(gcloud secrets versions access latest \
+              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --project="$PROJECT" \
+              | jq -c '.toolkit_config')
+
+            DESIRED="$SKELETON"
+            for FQN in $(jq -r '.[].fqn' "${META_DIR}/${TOOL}.json"); do
+              REG=$(gsutil cat "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json")
+              KID=$(echo "$REG" | jq -r '.tool_kid // "MISSING"')
+              if [ "$KID" = "MISSING" ] || [ "$KID" = "null" ]; then
+                echo "::error::No tool_kid for $FQN — refusing to write toolkit-config"
+                exit 1
+              fi
+              DESIRED=$(echo "$DESIRED" | jq -c --arg fqn "$FQN" --argjson kid "$KID" \
+                '.signed_http.tools[$fqn].tool_kid = $kid')
+            done
+
+            CURRENT=$(gcloud secrets versions access latest \
+              --secret="$SECRET" --project="$PROJECT" 2>/dev/null | jq -c . 2>/dev/null || echo "")
+            if [ "$DESIRED" = "$CURRENT" ]; then
+              echo "  ✓ toolkit-config for $VERSIONED unchanged"
+            else
+              echo -n "$DESIRED" | gcloud secrets versions add "$SECRET" --project="$PROJECT" --data-file=-
+              echo "  + Wrote new toolkit-config for $VERSIONED"
+            fi
+          done

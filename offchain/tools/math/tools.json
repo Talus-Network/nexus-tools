@@ -1,0 +1,7 @@
+{
+  "tool_name": "math",
+  "command": "math",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}
