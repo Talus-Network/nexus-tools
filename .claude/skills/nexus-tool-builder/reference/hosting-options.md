@@ -23,7 +23,7 @@ The `templates/deploy/` folder emits:
 ## Alternatives (per-tool migration targets)
 
 | Provider | Fit | Trade-off |
-|---|---|---|
+| --- | --- | --- |
 | **Akash Network** | Best general DePIN fit. Mature compute marketplace, supports arbitrary Docker HTTPS services. | More ops friction than Cloud Run; debugging tooling weaker. |
 | **Spheron** | Web3 cloud aggregator on top of AWS / Akash. Closest to managed-deploy UX with a DePIN backend. | Newer; smaller ecosystem than Cloud Run. |
 | **Atoma Network** | Sui-native AI inference DePIN. Best fit when the tool itself is LLM inference. | Not general-purpose hosting — inference workloads only. |

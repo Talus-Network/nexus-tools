@@ -17,12 +17,17 @@ name = "payments-stripe"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+dotenvy.workspace = true
+env_logger.workspace = true
+log.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-serde_json.workspace = true
-serde.workspace = true
-schemars.workspace = true
+zeroize.workspace = true
 
 # === Nexus deps ===
 nexus-toolkit.workspace = true
