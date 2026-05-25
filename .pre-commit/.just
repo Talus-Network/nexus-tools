@@ -1,4 +1,8 @@
-import '../helpers/helpers.just'
+import '../offchain/helpers/helpers.just'
+
+# Cargo lives under offchain/; default all recipes there. Recipes that
+# need a different PWD (md-lint, typos, shebang checks) `cd` explicitly.
+set working-directory := '../offchain'
 
 [private]
 _default:
@@ -226,6 +230,50 @@ executable-scripts:
     done
 
     exit $error
+
+# Verify every offchain/tools/<name>/ follows the tool author contract:
+#   1. has tools.json
+#   2. has build.rs (which validates [[bin]] == crate name at compile time)
+#   3. no fqn!("...@<digits>") hardcoded — must use
+#      fqn!(concat!("...@", env!("TOOL_FQN_VERSION")))
+# A hardcoded @N would compile fine but ship the wrong content-version
+# to chain (or collide with the legacy @1 registrations), so this is the
+# main thing the build system can't catch on its own.
+check-tool-conventions:
+    #!/usr/bin/env bash
+
+    set -euo pipefail
+
+    cd $(git rev-parse --show-toplevel)
+
+    error=0
+
+    for d in offchain/tools/*/; do
+        tool=$(basename "$d")
+        if [[ ! -f "${d}tools.json" ]]; then
+            echo "❌  ${d}: missing tools.json" >&2
+            error=1
+        fi
+        if [[ ! -f "${d}build.rs" ]]; then
+            echo "❌  ${d}: missing build.rs (needed to thread TOOL_FQN_VERSION)" >&2
+            error=1
+        fi
+    done
+
+    # Any fqn!("...@<digits>") with a literal numeric version is a bug:
+    # the version must come from env!("TOOL_FQN_VERSION") via concat!().
+    bad=$(grep -rEn 'fqn!\("[^"]+@[0-9]+"' offchain/tools/*/src/ 2>/dev/null || true)
+    if [[ -n "$bad" ]]; then
+        echo "❌  Hardcoded fqn! version found — use concat!(\"...@\", env!(\"TOOL_FQN_VERSION\")):" >&2
+        echo "$bad" >&2
+        error=1
+    fi
+
+    if [[ $error -eq 0 ]]; then
+        echo "✅  Tool conventions OK" >&2
+    fi
+    exit $error
+
 
 nightly-version:
     #!/usr/bin/env bash
