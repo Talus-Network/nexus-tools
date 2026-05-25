@@ -1,4 +1,6 @@
-//! # `xyz.taluslabs.payments.stripe.get-payment-intent@1`
+//! # `xyz.taluslabs.payments.stripe.get-payment-intent@<TOOL_FQN_VERSION>`
+//!
+//! Credentials come from `STRIPE_API_KEY` env at startup; never on Input.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient},
@@ -11,7 +13,6 @@ use {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    pub api_key: String,
     pub payment_intent_id: String,
 }
 
@@ -53,7 +54,10 @@ impl NexusTool for GetPaymentIntent {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
@@ -86,9 +90,8 @@ impl NexusTool for GetPaymentIntent {
         }
 
         let endpoint = format!("v1/payment_intents/{}", input.payment_intent_id);
-        let client = self.client.clone().with_auth(&input.api_key);
 
-        match client.get::<StripePaymentIntent>(&endpoint).await {
+        match self.client.get::<StripePaymentIntent>(&endpoint).await {
             Ok(pi) => Output::Ok {
                 id: pi.id,
                 status: pi.status,
@@ -114,7 +117,7 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, GetPaymentIntent) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE");
         (server, GetPaymentIntent { client })
     }
 
@@ -140,7 +143,6 @@ mod tests {
 
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 payment_intent_id: "pi_test_123".to_string(),
             })
             .await;
@@ -174,7 +176,6 @@ mod tests {
 
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 payment_intent_id: "pi_missing".to_string(),
             })
             .await;
@@ -192,7 +193,6 @@ mod tests {
         let (_, tool) = create_server_and_tool().await;
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 payment_intent_id: "".to_string(),
             })
             .await;

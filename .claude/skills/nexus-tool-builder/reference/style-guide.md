@@ -28,7 +28,7 @@ Err {
 ## Interface design
 
 | ✅ Do | ❌ Don't |
-|---|---|
+| --- | --- |
 | Build a tool that encapsulates the API's surface (one tool per endpoint, parameterized). | Build a tool that only does one hardcoded call (e.g. "BTC-USD spot price"). |
 | Split `prompt` and `context` into separate input ports even if the API merges them. | Merge them into one input port — the DAG can't set defaults for fields combined with edge data. |
 | Accept `json_schema` as input and validate generic responses against it (where applicable). | Hardcode the output schema for a single endpoint when the underlying API serves many. |

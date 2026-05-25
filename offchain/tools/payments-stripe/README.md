@@ -1,36 +1,59 @@
 # Stripe tools for Nexus
 
 A set of stateless Nexus Tools that wrap the [Stripe REST
-API](https://stripe.com/docs/api). Each tool is a single endpoint; pass
-your Stripe secret key per request via the `api_key` input port.
+API](https://stripe.com/docs/api). Each tool is a single endpoint.
 
 ## Credential handling
 
-- **Never** put a real Stripe key in a DAG `default_values` entry — DAG
-  data is committed to Sui and is public + permanent. Use placeholders
-  like `$STRIPE_API_KEY` and have the Leader inject the real value at
-  execution time from its secret store.
-- **Tests use `sk_test_...` keys only.** Real `sk_live_...` material
-  must never enter source, fixtures, or logs.
-- The Tool process holds no Stripe credentials between requests. The
-  `api_key` lives only in the `Input` struct's scope inside `invoke()`.
+- **The tool reads `STRIPE_API_KEY` once from the process environment at
+  startup.** Sources:
+  - Production (Cloud Run): mounted via `secretKeyRef` from GCP Secret
+    Manager, configured by the operator out-of-band (the deploy pipeline
+    does NOT provision the secret).
+  - Local dev: copy `.env.example` to `.env` and set
+    `STRIPE_API_KEY=sk_test_…`.
+- **The credential never appears on any `Input` struct.** Tool inputs flow
+  through the Nexus DAG on Sui as plaintext — anything on `Input` is
+  effectively published on-chain. The skill's auditor will refuse to mark
+  the tool ready if any `Input` field is credential-shaped.
+- The credential is wrapped in `zeroize::Zeroizing<String>` (heap-zeroed
+  on drop). The struct hand-implements `Debug` to print `<redacted>`.
+- The tool exits 1 at startup if `STRIPE_API_KEY` is unset, empty, or does
+  not start with one of `sk_test_`, `sk_live_`, `rk_test_`, `rk_live_`.
+- **Tests use `sk_test_…` keys only.** Real `sk_live_…` material must
+  never enter source, fixtures, or logs.
+
+## Environment variables
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `STRIPE_API_KEY` | **yes** | — | Stripe secret (`sk_test_…` for staging/test, `sk_live_…` for prod). Validated at startup; the tool refuses to boot without it. |
+| `RUST_LOG` | no | `info` | env_logger filter. |
+| `BIND_ADDR` | no | `127.0.0.1:8080` | The toolkit's HTTP bind address. |
 
 ## Idempotency
 
 Every write endpoint accepts an optional `idempotency_key`. Generate a
 UUID per logical retry-bucket in your DAG. Stripe guarantees identical
 responses for identical idempotency keys; reusing the same key on retry
-prevents double-charges.
+prevents double-charges. `idempotency_key` is per-call dedup data — NOT a
+credential — so it stays on `Input`.
+
+## FQN versioning
+
+All six FQNs are threaded through `env!("TOOL_FQN_VERSION")` in
+`build.rs`; CI sets `TOOL_FQN_VERSION` from the tool's subtree git hash,
+so any source change auto-bumps the version on the next deploy. Local
+builds default to `@1`.
 
 ---
 
-# `xyz.taluslabs.payments.stripe.create-payment-intent@1`
+# `xyz.taluslabs.payments.stripe.create-payment-intent@<TOOL_FQN_VERSION>`
 
 Creates a [PaymentIntent](https://stripe.com/docs/api/payment_intents/create).
 
 ## Input
 
-- **`api_key`: [`String`]** — Stripe secret key (`sk_test_...` for staging, `sk_live_...` for prod). Sourced by the Leader at execution time.
 - **`idempotency_key`: [`String`] (optional)** — `Idempotency-Key` header value. Generate a UUID per retry-bucket.
 - **`amount`: [`i64`]** — Amount in the smallest currency unit (e.g. cents for USD).
 - **`currency`: [`String`]** — ISO-4217 currency code (lowercase, e.g. `usd`).
@@ -55,13 +78,12 @@ Creates a [PaymentIntent](https://stripe.com/docs/api/payment_intents/create).
 
 ---
 
-# `xyz.taluslabs.payments.stripe.get-payment-intent@1`
+# `xyz.taluslabs.payments.stripe.get-payment-intent@<TOOL_FQN_VERSION>`
 
 Retrieves a [PaymentIntent](https://stripe.com/docs/api/payment_intents/retrieve) by id.
 
 ## Input
 
-- **`api_key`: [`String`]** — Stripe secret key.
 - **`payment_intent_id`: [`String`]** — `pi_…` to look up.
 
 ## Output Variants & Ports
@@ -78,13 +100,12 @@ Retrieves a [PaymentIntent](https://stripe.com/docs/api/payment_intents/retrieve
 
 ---
 
-# `xyz.taluslabs.payments.stripe.confirm-payment-intent@1`
+# `xyz.taluslabs.payments.stripe.confirm-payment-intent@<TOOL_FQN_VERSION>`
 
 [Confirms](https://stripe.com/docs/api/payment_intents/confirm) a PaymentIntent.
 
 ## Input
 
-- **`api_key`: [`String`]**
 - **`idempotency_key`: [`String`] (optional)**
 - **`payment_intent_id`: [`String`]** — `pi_…` to confirm.
 - **`payment_method`: [`String`] (optional)** — `pm_…` to attach (e.g. `pm_card_visa` in test mode).
@@ -102,13 +123,12 @@ Retrieves a [PaymentIntent](https://stripe.com/docs/api/payment_intents/retrieve
 
 ---
 
-# `xyz.taluslabs.payments.stripe.create-customer@1`
+# `xyz.taluslabs.payments.stripe.create-customer@<TOOL_FQN_VERSION>`
 
 Creates a [Customer](https://stripe.com/docs/api/customers/create).
 
 ## Input
 
-- **`api_key`: [`String`]**
 - **`idempotency_key`: [`String`] (optional)**
 - **`email`: [`String`] (optional)**
 - **`name`: [`String`] (optional)**
@@ -126,13 +146,13 @@ Creates a [Customer](https://stripe.com/docs/api/customers/create).
 
 ---
 
-# `xyz.taluslabs.payments.stripe.get-balance@1`
+# `xyz.taluslabs.payments.stripe.get-balance@<TOOL_FQN_VERSION>`
 
 Reads the platform [Balance](https://stripe.com/docs/api/balance/balance_retrieve).
 
 ## Input
 
-- **`api_key`: [`String`]**
+No input ports — credentials come from env.
 
 ## Output Variants & Ports
 
@@ -145,13 +165,12 @@ Reads the platform [Balance](https://stripe.com/docs/api/balance/balance_retriev
 
 ---
 
-# `xyz.taluslabs.payments.stripe.list-charges@1`
+# `xyz.taluslabs.payments.stripe.list-charges@<TOOL_FQN_VERSION>`
 
 Lists [Charges](https://stripe.com/docs/api/charges/list).
 
 ## Input
 
-- **`api_key`: [`String`]**
 - **`limit`: [`i64`] (optional)** — Page size (1–100, Stripe default 10).
 - **`customer`: [`String`] (optional)** — Filter to a specific customer id.
 - **`starting_after`: [`String`] (optional)** — Cursor for pagination (charge id from the previous page).
