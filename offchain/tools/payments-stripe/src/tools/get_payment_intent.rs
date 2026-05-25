@@ -58,7 +58,10 @@ impl NexusTool for GetPaymentIntent {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.get-payment-intent@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.get-payment-intent@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

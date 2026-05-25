@@ -12,6 +12,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "payments-stripe"
+path = "src/main.rs"
+
 [dependencies]
 thiserror.workspace = true
 tokio.workspace = true
@@ -26,3 +30,7 @@ nexus-sdk.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"
