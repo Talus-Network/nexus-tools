@@ -7,7 +7,7 @@ its `AUDIT.md` output.
 ## Off-chain (Rust) — CRITICAL
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | C1 | `Output` is a Rust `enum` (not a struct) with `#[serde(rename_all = "snake_case")]` | Nexus runtime rejects non-`oneOf` schemas. |
 | C2 | No `unwrap()` / `expect()` / `panic!` on any path reachable from `invoke()` | Panics surface as opaque 500s; Nexus expects typed `Err` variants. |
 | C3 | No `danger_accept_invalid_certs` or any TLS bypass | Leader-side TLS verification is part of the Nexus trust model. |
@@ -23,7 +23,7 @@ its `AUDIT.md` output.
 ## Off-chain — HIGH
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | H1 | `Input` has `#[serde(deny_unknown_fields)]` | Stops silent acceptance of typos / injection of unknown control fields. |
 | H2 | Every `NexusTool::path()` is unique within the crate | `bootstrap!` will mount duplicates at the same route; behavior is undefined. |
 | H3 | `NexusTool::timeout()` is overridden to a value below the Leader request budget but above 2× expected upstream latency | Default 10s is too short for many real APIs and too long for cheap ones. |
@@ -38,7 +38,7 @@ its `AUDIT.md` output.
 ## Off-chain — MEDIUM
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | M1 | `NexusTool::description()` is non-empty | `/meta` exposes this to DAG authors. |
 | M2 | Every endpoint has a `mockito`-backed happy-path test | Regressions caught at PR time. |
 | M3 | Every endpoint has at least one error-variant test | Same. |
@@ -49,7 +49,7 @@ its `AUDIT.md` output.
 ## Off-chain — LOW / INFO
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | L1 | Doc comments on every `Input` / `Output` field — they show up in `input_schema` / `output_schema` | DAG authors need this. |
 | L2 | `Cargo.toml` `description` is set | Helps `cargo metadata` consumers. |
 | L3 | README has one section per FQN | Convention; consumed by tooling. |
@@ -57,7 +57,7 @@ its `AUDIT.md` output.
 ## On-chain (Move) — CRITICAL
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | C-M1 | `execute` first parameter is `worksheet: &mut ProofOfUID`, last is `ctx: &mut TxContext`, returns `TaggedOutput` | Runtime enforces this signature. |
 | C-M2 | `worksheet.stamp_with_data(&witness.id, …)` is called on **every** code path before `execute` returns | Without it the Nexus runtime rejects the proof. Easy to miss in early-return branches. |
 | C-M3 | Witness struct does NOT have the `copy` ability | A copyable witness lets anyone forge proofs. |
@@ -68,7 +68,7 @@ its `AUDIT.md` output.
 ## On-chain — HIGH
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | H-M1 | Output enum has at least one `err`-prefixed variant | Nexus treats them as error variants. |
 | H-M2 | TaggedOutput field types use the right `as_*()` (number/string/bool/address/raw) | Wrong typing breaks downstream tools at the schema layer, after the Move call succeeded. |
 | H-M3 | No unbounded loops over caller-controlled `vector<T>` or dynamic field reads | Gas grief / out-of-budget aborts. |
@@ -79,7 +79,7 @@ its `AUDIT.md` output.
 ## On-chain — MEDIUM
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | M-M1 | No `friend` modules outside this package | `friend` widens access; reviewers need to follow the trust path. |
 | M-M2 | Every shared object is initialized in `init` and not re-creatable | Drift between the published state and the registered witness id breaks Nexus. |
 | M-M3 | Test for the witness-stamping flow (positive assertion that the worksheet has the expected stamp after `execute`) | Catches silent misuse of `stamp_with_data`. |
@@ -87,14 +87,14 @@ its `AUDIT.md` output.
 ## On-chain — LOW / INFO
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | L-M1 | Doc comments on `execute` and on every `Output` variant | Schema generation reads them. |
 | L-M2 | Module path matches the FQN convention `<domain>.<category>.<name>@<version>` | Convention; helps discovery. |
 
 ## Cross-cutting (both kinds)
 
 | # | Check | Why it matters |
-|---|---|---|
+| --- | --- | --- |
 | X1 | FQN version (`@1`) is bumped when output schema changes | Existing DAGs break otherwise. |
 | X2 | `description` (Rust) / module-level docstrings (Move) accurately describe behavior | Misleading descriptions break DAG composition by humans and agents. |
 | X3 | Tool is **idempotent** under retry — same input ⇒ same output, side-effect-free for read tools | The Leader retries on transient failures. |

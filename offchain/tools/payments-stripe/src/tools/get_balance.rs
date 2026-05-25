@@ -1,4 +1,6 @@
-//! # `xyz.taluslabs.payments.stripe.get-balance@1`
+//! # `xyz.taluslabs.payments.stripe.get-balance@<TOOL_FQN_VERSION>`
+//!
+//! Credentials come from `STRIPE_API_KEY` env at startup; never on Input.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient, tools::models::BalanceAmount},
@@ -10,9 +12,7 @@ use {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Input {
-    pub api_key: String,
-}
+pub(crate) struct Input {}
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -45,12 +45,18 @@ impl NexusTool for GetBalance {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.get-balance@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.get-balance@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
@@ -65,9 +71,8 @@ impl NexusTool for GetBalance {
         Ok(StatusCode::OK)
     }
 
-    async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let client = self.client.clone().with_auth(&input.api_key);
-        match client.get::<BalanceResponse>("v1/balance").await {
+    async fn invoke(&self, _input: Self::Input) -> Self::Output {
+        match self.client.get::<BalanceResponse>("v1/balance").await {
             Ok(b) => Output::Ok {
                 available: b.available,
                 pending: b.pending,
@@ -90,7 +95,7 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, GetBalance) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE");
         (server, GetBalance { client })
     }
 
@@ -110,11 +115,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = tool
-            .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
-            })
-            .await;
+        let result = tool.invoke(Input {}).await;
         match result {
             Output::Ok { available, pending } => {
                 assert_eq!(available.len(), 1);

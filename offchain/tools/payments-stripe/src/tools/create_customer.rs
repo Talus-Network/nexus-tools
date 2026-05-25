@@ -1,4 +1,6 @@
-//! # `xyz.taluslabs.payments.stripe.create-customer@1`
+//! # `xyz.taluslabs.payments.stripe.create-customer@<TOOL_FQN_VERSION>`
+//!
+//! Credentials come from `STRIPE_API_KEY` env at startup; never on Input.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient},
@@ -11,7 +13,6 @@ use {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    pub api_key: String,
     pub idempotency_key: Option<String>,
     pub email: Option<String>,
     pub name: Option<String>,
@@ -52,12 +53,18 @@ impl NexusTool for CreateCustomer {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.create-customer@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.create-customer@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
@@ -84,10 +91,10 @@ impl NexusTool for CreateCustomer {
             form.push(("description", d.clone()));
         }
 
-        let mut client = self.client.clone().with_auth(&input.api_key);
-        if let Some(k) = &input.idempotency_key {
-            client = client.with_idempotency(k);
-        }
+        let client = match &input.idempotency_key {
+            Some(k) => self.client.clone().with_idempotency(k),
+            None => self.client.clone(),
+        };
 
         match client
             .post_form::<CustomerResponse, _>("v1/customers", &form)
@@ -116,7 +123,7 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, CreateCustomer) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE");
         (server, CreateCustomer { client })
     }
 
@@ -139,7 +146,6 @@ mod tests {
 
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 idempotency_key: None,
                 email: Some("test@example.com".to_string()),
                 name: Some("Test User".to_string()),
@@ -176,7 +182,6 @@ mod tests {
 
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_BAD".to_string(),
                 idempotency_key: None,
                 email: Some("test@example.com".to_string()),
                 name: None,

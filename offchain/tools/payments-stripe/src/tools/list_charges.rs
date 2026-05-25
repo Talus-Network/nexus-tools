@@ -1,4 +1,6 @@
-//! # `xyz.taluslabs.payments.stripe.list-charges@1`
+//! # `xyz.taluslabs.payments.stripe.list-charges@<TOOL_FQN_VERSION>`
+//!
+//! Credentials come from `STRIPE_API_KEY` env at startup; never on Input.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient, tools::models::ChargeSummary},
@@ -11,7 +13,6 @@ use {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    pub api_key: String,
     pub limit: Option<i64>,
     pub customer: Option<String>,
     pub starting_after: Option<String>,
@@ -48,12 +49,18 @@ impl NexusTool for ListCharges {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.list-charges@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.list-charges@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
@@ -97,8 +104,7 @@ impl NexusTool for ListCharges {
             format!("v1/charges?{qs}")
         };
 
-        let client = self.client.clone().with_auth(&input.api_key);
-        match client.get::<ListResponse>(&endpoint).await {
+        match self.client.get::<ListResponse>(&endpoint).await {
             Ok(r) => Output::Ok {
                 charges: r.data,
                 has_more: r.has_more,
@@ -143,7 +149,7 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, ListCharges) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE");
         (server, ListCharges { client })
     }
 
@@ -168,7 +174,6 @@ mod tests {
 
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 limit: Some(2),
                 customer: None,
                 starting_after: None,
@@ -190,7 +195,6 @@ mod tests {
         let (_, tool) = create_server_and_tool().await;
         let result = tool
             .invoke(Input {
-                api_key: "sk_test_FAKE".to_string(),
                 limit: Some(150),
                 customer: None,
                 starting_after: None,

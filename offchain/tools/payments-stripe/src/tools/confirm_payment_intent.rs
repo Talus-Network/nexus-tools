@@ -1,4 +1,6 @@
-//! # `xyz.taluslabs.payments.stripe.confirm-payment-intent@1`
+//! # `xyz.taluslabs.payments.stripe.confirm-payment-intent@<TOOL_FQN_VERSION>`
+//!
+//! Credentials come from `STRIPE_API_KEY` env at startup; never on Input.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient},
@@ -11,7 +13,6 @@ use {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    pub api_key: String,
     pub idempotency_key: Option<String>,
     pub payment_intent_id: String,
     pub payment_method: Option<String>,
@@ -58,12 +59,18 @@ impl NexusTool for ConfirmPaymentIntent {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.confirm-payment-intent@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.confirm-payment-intent@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
@@ -96,10 +103,10 @@ impl NexusTool for ConfirmPaymentIntent {
         }
 
         let endpoint = format!("v1/payment_intents/{}/confirm", input.payment_intent_id);
-        let mut client = self.client.clone().with_auth(&input.api_key);
-        if let Some(k) = &input.idempotency_key {
-            client = client.with_idempotency(k);
-        }
+        let client = match &input.idempotency_key {
+            Some(k) => self.client.clone().with_idempotency(k),
+            None => self.client.clone(),
+        };
 
         match client
             .post_form::<ConfirmResponse, _>(&endpoint, &form)
@@ -128,13 +135,12 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, ConfirmPaymentIntent) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE");
         (server, ConfirmPaymentIntent { client })
     }
 
     fn test_input() -> Input {
         Input {
-            api_key: "sk_test_FAKE".to_string(),
             idempotency_key: None,
             payment_intent_id: "pi_test_123".to_string(),
             payment_method: Some("pm_card_visa".to_string()),

@@ -1,8 +1,0 @@
-[
-  "/create-payment-intent",
-  "/get-payment-intent",
-  "/confirm-payment-intent",
-  "/create-customer",
-  "/get-balance",
-  "/list-charges"
-]

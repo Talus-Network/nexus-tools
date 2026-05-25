@@ -1,9 +1,10 @@
-//! # `xyz.taluslabs.payments.stripe.create-payment-intent@1`
+//! # `xyz.taluslabs.payments.stripe.create-payment-intent@<TOOL_FQN_VERSION>`
 //!
 //! Creates a Stripe PaymentIntent.
 //!
-//! Stateless: holds only a stateless connection pool. Credential
-//! (`api_key`) is supplied per request via `Input`.
+//! Credentials come from the `STRIPE_API_KEY` env var at startup (see
+//! `src/stripe_client.rs::from_env`). They are NEVER fields on `Input` —
+//! tool inputs flow through the Nexus DAG on Sui as plaintext.
 
 use {
     crate::{error::StripeErrorKind, stripe_client::StripeClient},
@@ -16,9 +17,6 @@ use {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
-    /// Stripe secret key. NEVER put this in DAG `default_values` — the
-    /// Leader supplies it at execution time.
-    pub api_key: String,
     /// Optional Idempotency-Key for safe retry.
     pub idempotency_key: Option<String>,
     /// Amount in the smallest currency unit (cents for USD).
@@ -68,12 +66,18 @@ impl NexusTool for CreatePaymentIntent {
 
     async fn new() -> Self {
         Self {
-            client: StripeClient::new(None),
+            client: StripeClient::from_env().unwrap_or_else(|e| {
+                log::error!("payments-stripe configuration invalid: {e}");
+                panic!("payments-stripe configuration invalid: {e}");
+            }),
         }
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.create-payment-intent@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.create-payment-intent@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
@@ -116,10 +120,10 @@ impl NexusTool for CreatePaymentIntent {
             form.push(("description", d.clone()));
         }
 
-        let mut client = self.client.clone().with_auth(&input.api_key);
-        if let Some(k) = &input.idempotency_key {
-            client = client.with_idempotency(k);
-        }
+        let client = match &input.idempotency_key {
+            Some(k) => self.client.clone().with_idempotency(k),
+            None => self.client.clone(),
+        };
 
         match client
             .post_form::<StripePaymentIntent, _>("v1/payment_intents", &form)
@@ -150,13 +154,12 @@ mod tests {
 
     async fn create_server_and_tool() -> (mockito::ServerGuard, CreatePaymentIntent) {
         let server = Server::new_async().await;
-        let client = StripeClient::new(Some(&server.url()));
+        let client = StripeClient::for_testing(&server.url(), "sk_test_FAKE_FOR_TESTS_ONLY");
         (server, CreatePaymentIntent { client })
     }
 
     fn test_input() -> Input {
         Input {
-            api_key: "sk_test_FAKE_FOR_TESTS_ONLY".to_string(),
             idempotency_key: Some("test-idempotency-key-001".to_string()),
             amount: 2000,
             currency: "usd".to_string(),
