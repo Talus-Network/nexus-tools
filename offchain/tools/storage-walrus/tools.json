@@ -1,0 +1,7 @@
+{
+  "tool_name": "walrus",
+  "command": "walrus",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}

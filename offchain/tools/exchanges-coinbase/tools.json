@@ -1,0 +1,7 @@
+{
+  "tool_name": "exchanges-coinbase",
+  "command": "exchanges-coinbase",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "tool_name": "memory-memwal",
+  "command": "memory-memwal",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}
