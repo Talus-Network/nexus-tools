@@ -57,7 +57,10 @@ impl NexusTool for CreateCustomer {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.create-customer@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.create-customer@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

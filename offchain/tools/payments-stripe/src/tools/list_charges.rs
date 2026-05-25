@@ -53,7 +53,10 @@ impl NexusTool for ListCharges {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.list-charges@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.list-charges@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

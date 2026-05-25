@@ -50,7 +50,10 @@ impl NexusTool for GetBalance {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.get-balance@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.get-balance@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {

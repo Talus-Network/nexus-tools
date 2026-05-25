@@ -63,7 +63,10 @@ impl NexusTool for ConfirmPaymentIntent {
     }
 
     fn fqn() -> ToolFqn {
-        fqn!("xyz.taluslabs.payments.stripe.confirm-payment-intent@1")
+        fqn!(concat!(
+            "xyz.taluslabs.payments.stripe.confirm-payment-intent@",
+            env!("TOOL_FQN_VERSION")
+        ))
     }
 
     fn path() -> &'static str {
