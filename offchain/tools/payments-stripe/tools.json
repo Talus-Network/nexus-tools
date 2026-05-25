@@ -1,0 +1,7 @@
+{
+  "tool_name": "payments-stripe",
+  "command": "payments-stripe",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}
