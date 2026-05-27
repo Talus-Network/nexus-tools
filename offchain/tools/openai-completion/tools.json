@@ -1,0 +1,10 @@
+{
+  "tool_name": "openai-completion",
+  "command": "openai-completion",
+  "environment": {
+    "RUST_LOG": "info",
+    "OPENAI_API_KEY": ""
+  },
+  "resources": { "cpu": "1", "memory": "512Mi" },
+  "signed_http": { "enabled": true }
+}

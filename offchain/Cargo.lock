@@ -2472,6 +2472,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "openai-completion"
+version = "1.0.0"
+dependencies = [
+ "async-openai",
+ "log",
+ "mockito",
+ "nexus-sdk",
+ "nexus-toolkit",
+ "reqwest 0.12.25",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
