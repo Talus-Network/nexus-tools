@@ -18,6 +18,7 @@ jobs:
     environment: >-
       ${{
         (github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        (github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
         'testnet'
       }}
     strategy:
@@ -39,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
           TOOL="${{ matrix.tool }}"
           VERSION="${{ matrix.version }}"
           VERSIONED="${TOOL}-v${VERSION}"
