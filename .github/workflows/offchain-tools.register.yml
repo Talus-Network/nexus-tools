@@ -18,6 +18,7 @@ jobs:
     environment: >-
       ${{
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
         'testnet'
       }}
     steps:
@@ -82,14 +83,19 @@ jobs:
           KEY_INDEX=$(sui keytool list --json | jq -r --arg addr "$ADDR" 'to_entries[] | select(.value.suiAddress == $addr) | .key')
           SUI_PK=$(jq -r --argjson idx "$KEY_INDEX" '.[$idx]' "$HOME/.sui/sui_config/sui.keystore")
 
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          # CHAIN_ID drives objects.toml filename and local nexus config —
+          # the file is published by tf-talus-nexus-v2 as
+          # objects.<chain_id>.toml (chain_id is testnet/mainnet). This stays
+          # tied to SUI_NETWORK; see TOOLS_NAMESPACE below for the deploy
+          # namespace, which is independent on the v2 RC env.
+          CHAIN_ID="${{ vars.SUI_NETWORK }}"
           wget -q -O "$RUNNER_TEMP/objects.toml" \
-            "https://storage.googleapis.com/production-talus-sui-objects/${{ vars.NEXUS_TAG }}/objects.${NETWORK}.toml?t=$(date +%s)"
+            "https://storage.googleapis.com/production-talus-sui-objects/${{ vars.NEXUS_TAG }}/objects.${CHAIN_ID}.toml?t=$(date +%s)"
 
           mkdir -p "$HOME/.nexus"
-          cp "$RUNNER_TEMP/objects.toml" "$HOME/.nexus/objects.${NETWORK}.toml"
+          cp "$RUNNER_TEMP/objects.toml" "$HOME/.nexus/objects.${CHAIN_ID}.toml"
           nexus conf set \
-            --nexus.objects "$HOME/.nexus/objects.${NETWORK}.toml" \
+            --nexus.objects "$HOME/.nexus/objects.${CHAIN_ID}.toml" \
             --sui.rpc-url "${{ vars.NEXT_PUBLIC_SUI_RPC_URL }}" \
             --sui.pk "$SUI_PK"
 
@@ -137,7 +143,10 @@ jobs:
           MANIFEST="${{ steps.artifacts.outputs.manifest }}"
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          # NETWORK here is the deploy namespace — Cloud Run hostname stem,
+          # GCS prefix for registration blobs, on-chain registration namespace.
+          # Falls back to SUI_NETWORK on existing testnet/mainnet envs.
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
           # Snapshot already-registered FQNs once up front. Each
           # `nexus tool register` call costs ~1-2s even for an
@@ -327,7 +336,7 @@ jobs:
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
@@ -371,7 +380,7 @@ jobs:
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")

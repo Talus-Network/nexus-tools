@@ -22,6 +22,7 @@ jobs:
     environment: >-
       ${{
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
         'testnet'
       }}
     strategy:
@@ -79,13 +80,30 @@ jobs:
           # whichever nexus version was current when it was first prepared.
           # Future NEXUS_TAG bumps only affect NEW deployments; existing
           # services keep their original allowed-leaders mount path.
+          # TOOLS_NAMESPACE (the deploy namespace — used for Cloud Run service
+          # naming, on-chain registration namespace, and GCS prefix) falls back
+          # to SUI_NETWORK on existing testnet/mainnet envs where they happen to
+          # be the same string. New envs (e.g. the v2 RC) set TOOLS_NAMESPACE
+          # explicitly so the namespace can be decoupled from chain_id.
+          TOOLS_NAMESPACE="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
+          # When TOOLS_NAMESPACE is set explicitly (i.e. differs from
+          # SUI_NETWORK), pin the allowed-leaders mount subdir to the upstream
+          # publish path directly. tf-nexus-tools' default derivation
+          # (`nexus-<chain_id>-<major.minor>`) only matches the v0.x convention;
+          # v2 uses the full RC suffix as the namespace directory name.
+          if [ "${{ vars.TOOLS_NAMESPACE }}" != "" ] && [ "${{ vars.TOOLS_NAMESPACE }}" != "${{ vars.SUI_NETWORK }}" ]; then
+            ALLOWED_LEADERS_SUBDIR="${{ vars.NEXUS_TAG }}/${{ vars.TOOLS_NAMESPACE }}"
+          else
+            ALLOWED_LEADERS_SUBDIR=""
+          fi
           jq -n \
             --arg name "$VERSIONED" \
-            --arg network "${{ vars.SUI_NETWORK }}" \
+            --arg network "$TOOLS_NAMESPACE" \
             --arg image "nexus-tools/${{ matrix.tool }}" \
             --arg tag "sha-${{ steps.names.outputs.sha }}" \
             --arg cmd "${{ matrix.command }}" \
             --arg nexus_tag "${{ vars.NEXUS_TAG }}" \
+            --arg allowed_leaders_subdir "$ALLOWED_LEADERS_SUBDIR" \
             --argjson extra_env "$EXTRA_ENV" \
             --argjson resources "$RESOURCES" \
             '{
@@ -104,7 +122,7 @@ jobs:
               ports: [{containerPort: 8080}],
               signed_http: {enabled: true},
               resources: $resources
-            }' > "$DIR/${VERSIONED}.json"
+            } + ($allowed_leaders_subdir | if . != "" then {allowed_leaders_subdir: .} else {} end)' > "$DIR/${VERSIONED}.json"
           echo "config=$DIR/${VERSIONED}.json" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate to GCP (protocol)
@@ -161,7 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
           VERSIONED="${{ steps.names.outputs.versioned }}"
           LOCAL="${{ steps.render.outputs.config }}"
           REMOTE="gs://${BUCKET}/${NETWORK}/offchain/tools/${VERSIONED}.json"
@@ -199,6 +217,7 @@ jobs:
     environment: >-
       ${{
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
         'testnet'
       }}
     steps:
@@ -244,7 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.SUI_NETWORK }}"
+          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
           HASH="${{ steps.manifest.outputs.hash }}"
           REMOTE="gs://${BUCKET}/${NETWORK}/offchain/manifest/${HASH}.json"
           if gsutil -q stat "$REMOTE" 2>/dev/null; then
