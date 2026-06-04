@@ -213,15 +213,7 @@ jobs:
   # GH_ACCESS_TOKEN PAT because GITHUB_TOKEN can't dispatch in other repos.
   trigger-tf-apply:
     needs: [register]
-    # tf-apply is gated off for the nexus-testnet-v2-0-rc-1 env while we
-    # bootstrap the new track. CI on this iterate branch should populate the
-    # GCS prefix and on-chain registrations; the tf-nexus-tools side is
-    # iterated manually until the namespace lands cleanly there. Once that's
-    # stable, drop the two `startsWith` exclusions to re-enable auto-apply.
-    if: >-
-      always() && !cancelled() && needs.register.result == 'success' &&
-      !startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') &&
-      !startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-')
+    if: always() && !cancelled() && needs.register.result == 'success'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
