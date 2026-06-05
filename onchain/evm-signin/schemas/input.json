@@ -1,0 +1,23 @@
+{
+  "0": {
+    "type": "object",
+    "name": "state",
+    "mutable": true,
+    "description": "Shared EvmSigninState object holding the tool witness"
+  },
+  "1": {
+    "type": "string",
+    "name": "message",
+    "description": "The exact bytes that were signed (EIP-191/EIP-712 preimage), hex-encoded. ecrecover Keccak256-hashes these internally."
+  },
+  "2": {
+    "type": "string",
+    "name": "signature",
+    "description": "65-byte secp256k1 signature (r, s, v), hex-encoded. v may be 27/28 (Ethereum) or 0/1 (raw recovery id)."
+  },
+  "3": {
+    "type": "string",
+    "name": "expected_address",
+    "description": "Optional 20-byte Ethereum address to check the recovered signer against, hex-encoded. Empty to skip the check."
+  }
+}

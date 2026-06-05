@@ -5,6 +5,9 @@ sdk/tests/move/object_crawler_test/Move.lock
 sdk/tests/move/onchain_tool_test/build
 sdk/tests/move/onchain_tool_test/Move.lock
 
+# Move build output (onchain tools)
+onchain/**/build/
+
 # Environment
 .env
 
