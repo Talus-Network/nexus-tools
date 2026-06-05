@@ -1,0 +1,9 @@
+{
+  "ok": {
+    "recovered_address": "string",
+    "matches": "bool"
+  },
+  "err": {
+    "reason": "string"
+  }
+}

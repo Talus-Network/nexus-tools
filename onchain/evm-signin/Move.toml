@@ -1,0 +1,11 @@
+[package]
+name = "evm_signin"
+edition = "2024.beta"
+
+[dependencies]
+nexus_primitives = { local = "../../../nexus-next/sui/primitives" }
+nexus_workflow = { local = "../../../nexus-next/sui/workflow" }
+nexus_interface = { local = "../../../nexus-next/sui/interface" }
+
+[addresses]
+evm_signin = "0x0"
