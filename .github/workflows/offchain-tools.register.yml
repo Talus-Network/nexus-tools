@@ -372,15 +372,13 @@ jobs:
             done
           done
 
-      - name: Reconcile toolkit-config secret
+      - name: Reconcile Toolkit-v2 config secret
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           MANIFEST="${{ steps.artifacts.outputs.manifest }}"
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
-          BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
-          NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
@@ -393,22 +391,23 @@ jobs:
             SKELETON=$(gcloud secrets versions access latest \
               --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
               --project="$PROJECT" \
-              | jq -c '.toolkit_config')
+              | jq -cS '.toolkit_config')
+            EXPECTED_FQNS=$(jq -c '[.[].fqn] | sort' "${META_DIR}/${TOOL}.json")
+
+            # Runtime config v2 embeds only each Tool's signing key. `tool_kid`
+            # remains on-chain registration metadata and is forbidden here.
+            if ! jq -e \
+              --argjson expected_fqns "$EXPECTED_FQNS" \
+              -f .github/scripts/toolkit-config-v2.jq \
+              <<<"$SKELETON" >/dev/null; then
+              echo "::error::Generated Toolkit config for $VERSIONED is not strict schema version 2"
+              exit 1
+            fi
 
             DESIRED="$SKELETON"
-            for FQN in $(jq -r '.[].fqn' "${META_DIR}/${TOOL}.json"); do
-              REG=$(gsutil cat "gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json")
-              KID=$(echo "$REG" | jq -r '.tool_kid // "MISSING"')
-              if [ "$KID" = "MISSING" ] || [ "$KID" = "null" ]; then
-                echo "::error::No tool_kid for $FQN — refusing to write toolkit-config"
-                exit 1
-              fi
-              DESIRED=$(echo "$DESIRED" | jq -c --arg fqn "$FQN" --argjson kid "$KID" \
-                '.signed_http.tools[$fqn].tool_kid = $kid')
-            done
 
             CURRENT=$(gcloud secrets versions access latest \
-              --secret="$SECRET" --project="$PROJECT" 2>/dev/null | jq -c . 2>/dev/null || echo "")
+              --secret="$SECRET" --project="$PROJECT" 2>/dev/null | jq -cS . 2>/dev/null || echo "")
             if [ "$DESIRED" = "$CURRENT" ]; then
               echo "  ✓ toolkit-config for $VERSIONED unchanged"
             else
