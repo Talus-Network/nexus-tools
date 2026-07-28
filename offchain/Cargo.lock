@@ -2341,7 +2341,7 @@ dependencies = [
 [[package]]
 name = "nexus-sdk"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?branch=main#6409e9d29f700169dd00239ceb2f250fb43d3f68"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a6438bcf8ef5080c7c5002dcdf5ae8943803df8e#a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
 dependencies = [
  "allocative",
  "anyhow",
@@ -2384,7 +2384,7 @@ dependencies = [
 [[package]]
 name = "nexus-toolkit"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?branch=main#6409e9d29f700169dd00239ceb2f250fb43d3f68"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a6438bcf8ef5080c7c5002dcdf5ae8943803df8e#a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
