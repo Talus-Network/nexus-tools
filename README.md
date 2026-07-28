@@ -157,15 +157,15 @@ FQN URLs on chain point at the right endpoints.
 
 1. **discover** — globs `offchain/tools/*/tools.json` and computes a per-tool content version from `git rev-parse HEAD:offchain/tools/<name>/` (first 8 hex of sha256 → u32).
 1. **deploy** — builds per-tool Docker images and pushes to `gcr.io/<infra-project>/nexus-tools/<tool>:sha-<7>`. Build and auth are split so token expiry can't kill a slow build mid-push.
-2. **prepare** — runs each container's `--meta` to extract the ToolMeta JSON, renders a Cloud Run config blob to `gs://<bucket>/<network>/offchain/tools/<tool>-v<version>.json`, and generates a signed-HTTP keys secret containing strict Toolkit runtime config version 2 in Secret Manager. The `nexus_contracts_tag` is baked from `vars.NEXUS_TAG` into each blob so it stays pinned to whichever Nexus version was current at prepare time.
-3. **register** — for each FQN:
+1. **prepare** — runs each container's `--meta` to extract the ToolMeta JSON, renders a Cloud Run config blob to `gs://<bucket>/<network>/offchain/tools/<tool>-v<version>.json`, and generates a signed-HTTP keys secret containing strict Toolkit runtime config version 2 in Secret Manager. The `nexus_contracts_tag` is baked from `vars.NEXUS_TAG` into each blob so it stays pinned to whichever Nexus version was current at prepare time.
+1. **register** — for each FQN:
    - skips the CLI call if already on chain (snapshot from `nexus tool list --json`),
    - otherwise pipes the ToolMeta to `nexus tool register offchain --from-meta -`,
    - persists `owner_cap_over_tool` + `owner_cap_over_gas` to `gs://<bucket>/<network>/offchain/registration/<tool>/<fqn>.json`,
    - registers signing keys (`nexus tool auth register-key`),
    - validates strict Toolkit runtime config version 2 and reconciles the per-tool `toolkit-config` Secret Manager secret.
    Pre-step: consolidates the deployer wallet's coins so a single coin can cover the 1 SUI per-tx budget that heavy schemas require.
-4. **trigger-tf-apply** — dispatches `Talus-Network/tf-nexus-tools`'s
+1. **trigger-tf-apply** — dispatches `Talus-Network/tf-nexus-tools`'s
    `terraform.yml` (via `the-actions-org/workflow-dispatch`, which
    works with fine-grained PATs). Terraform materializes the Cloud
    Run services, internal ALB, and DNS records based on the per-tool
