@@ -52,6 +52,8 @@ conventions the CI pipeline relies on:
    }
    ~~~
 
+   The `signed_http.enabled` value belongs to the infrastructure deployment descriptor; it is not the Toolkit runtime JSON. CI generates and validates a strict Toolkit runtime config with `"version": 2` before publishing the mounted `toolkit-config` secret.
+
 1. **`build.rs`** — must compile-time validate that the crate name
    matches the binary and emit `TOOL_FQN_VERSION` from the Docker
    build-arg (defaults to `"1"` for local builds). Copy from an
@@ -99,14 +101,14 @@ Two roles for branches, one for tags:
   deployment is attributable to an exact ref — no merge-strategy
   gotchas, no long-lived deploy branches to keep clean.
 
-| Trigger | Matrix | Build | Push images | Chain ops | TF apply |
-| --- | --- | --- | --- | --- | --- |
-| PR (any base) | changed | ✓ | dry-run | — | — |
-| Push to `main` | changed | ✓ | ✓ | — | — |
-| Push to `iterate/testnet/**` / `iterate/mainnet/**` | all | ✓ | ✓ | ✓ (env) | ✓ |
-| Push tag `testnet-*` / `mainnet-*` | all | ✓ | ✓ | ✓ (tag prefix) | ✓ |
-| `workflow_dispatch` `target-env=testnet\|mainnet` | all | ✓ | ✓ | ✓ (chosen) | ✓ |
-| `workflow_dispatch` `pr-number=<N>` | all | ✓ | ✓ | ✓ (PR's base) | ✓ |
+| Trigger                                             | Matrix  | Build | Push images | Chain ops      | TF apply |
+| --------------------------------------------------- | ------- | ----- | ----------- | -------------- | -------- |
+| PR (any base)                                       | changed | ✓     | dry-run     | —              | —        |
+| Push to `main`                                      | changed | ✓     | ✓           | —              | —        |
+| Push to `iterate/testnet/**` / `iterate/mainnet/**` | all     | ✓     | ✓           | ✓ (env)        | ✓        |
+| Push tag `testnet-*` / `mainnet-*`                  | all     | ✓     | ✓           | ✓ (tag prefix) | ✓        |
+| `workflow_dispatch` `target-env=testnet\|mainnet`   | all     | ✓     | ✓           | ✓ (chosen)     | ✓        |
+| `workflow_dispatch` `pr-number=<N>`                 | all     | ✓     | ✓           | ✓ (PR's base)  | ✓        |
 
 ## Lifecycle: PR → main → deploy
 
@@ -153,28 +155,16 @@ FQN URLs on chain point at the right endpoints.
 
 ## What "full pipeline" does
 
-1. **discover** — globs `offchain/tools/*/tools.json` and computes a
-   per-tool content version from `git rev-parse HEAD:offchain/tools/<name>/`
-   (first 8 hex of sha256 → u32).
-1. **deploy** — builds per-tool Docker images and pushes to
-   `gcr.io/<infra-project>/nexus-tools/<tool>:sha-<7>`. Build and auth
-   are split so token expiry can't kill a slow build mid-push.
-1. **prepare** — runs each container's `--meta` to extract the
-   ToolMeta JSON, renders a Cloud Run config blob to
-   `gs://<bucket>/<network>/offchain/tools/<tool>-v<version>.json`,
-   and generates a signed-HTTP keys secret in Secret Manager. The
-   `nexus_contracts_tag` is baked from `vars.NEXUS_TAG` into each blob
-   so it stays pinned to whichever Nexus version was current at
-   prepare time.
+1. **discover** — globs `offchain/tools/*/tools.json` and computes a per-tool content version from `git rev-parse HEAD:offchain/tools/<name>/` (first 8 hex of sha256 → u32).
+1. **deploy** — builds per-tool Docker images and pushes to `gcr.io/<infra-project>/nexus-tools/<tool>:sha-<7>`. Build and auth are split so token expiry can't kill a slow build mid-push.
+1. **prepare** — runs each container's `--meta` to extract the ToolMeta JSON, renders a Cloud Run config blob to `gs://<bucket>/<network>/offchain/tools/<tool>-v<version>.json`, and generates a signed-HTTP keys secret containing strict Toolkit runtime config version 2 in Secret Manager. The `nexus_contracts_tag` is baked from `vars.NEXUS_TAG` into each blob so it stays pinned to whichever Nexus version was current at prepare time.
 1. **register** — for each FQN:
    - skips the CLI call if already on chain (snapshot from `nexus tool list --json`),
    - otherwise pipes the ToolMeta to `nexus tool register offchain --from-meta -`,
-   - persists `owner_cap_over_tool` + `owner_cap_over_gas` to
-     `gs://<bucket>/<network>/offchain/registration/<tool>/<fqn>.json`,
+   - persists `owner_cap_over_tool` + `owner_cap_over_gas` to `gs://<bucket>/<network>/offchain/registration/<tool>/<fqn>.json`,
    - registers signing keys (`nexus tool auth register-key`),
-   - reconciles the per-tool `toolkit-config` Secret Manager secret.
-   Pre-step: consolidates the deployer wallet's coins so a single coin
-   can cover the 1 SUI per-tx budget that heavy schemas require.
+   - validates strict Toolkit runtime config version 2 and reconciles the per-tool `toolkit-config` Secret Manager secret.
+   Pre-step: consolidates the deployer wallet's coins so a single coin can cover the 1 SUI per-tx budget that heavy schemas require.
 1. **trigger-tf-apply** — dispatches `Talus-Network/tf-nexus-tools`'s
    `terraform.yml` (via `the-actions-org/workflow-dispatch`, which
    works with fine-grained PATs). Terraform materializes the Cloud

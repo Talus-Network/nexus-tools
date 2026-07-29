@@ -143,7 +143,7 @@ jobs:
 
       - name: Generate signed HTTP keys (idempotent)
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           VERSIONED="${{ steps.names.outputs.versioned }}"
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
           META="${RUNNER_TEMP}/prepare/meta/${{ matrix.tool }}.json"
@@ -151,19 +151,28 @@ jobs:
           FQNS=$(jq -r '.[].fqn' "$META" | tr '\n' ' ' | xargs)
           echo "FQNs for $VERSIONED: $FQNS"
 
-          FORCE_FLAG=""
+          FORCE_ARGS=()
           EXISTING=$(gcloud secrets versions access latest \
             --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
             --project="$PROJECT" 2>/dev/null || echo "")
-          if [ -n "$EXISTING" ]; then
-            EXISTING_FQNS=$(echo "$EXISTING" | jq -r '[.keys_registry[].fqn] | sort | join(" ")')
-            WANTED_FQNS=$(echo "$FQNS" | tr ' ' '\n' | sort | tr '\n' ' ' | xargs)
-            if [ "$EXISTING_FQNS" != "$WANTED_FQNS" ]; then
-              echo "FQNs changed: '$EXISTING_FQNS' -> '$WANTED_FQNS' — forcing new keys"
-              FORCE_FLAG="--force"
-            else
-              echo "FQNs unchanged — skipping keygen"
+          if [[ -n "$EXISTING" ]]; then
+            EXPECTED_FQNS=$(jq -c '[.[].fqn] | sort' "$META")
+            if ! EXISTING_FQNS=$(jq -ce '[.keys_registry[].fqn] | sort' <<<"$EXISTING") \
+              || ! EXISTING_TOOLKIT_CONFIG=$(jq -ce '.toolkit_config' <<<"$EXISTING"); then
+              echo "Malformed signing-key secret found — forcing Toolkit-v2 keys"
+              FORCE_ARGS=(--force)
+            elif [[ "$EXISTING_FQNS" != "$EXPECTED_FQNS" ]]; then
+              echo "FQNs changed: '$EXISTING_FQNS' -> '$EXPECTED_FQNS' — forcing new keys"
+              FORCE_ARGS=(--force)
+            elif jq -e \
+              --argjson expected_fqns "$EXPECTED_FQNS" \
+              -f .github/scripts/toolkit-config-v2.jq \
+              <<<"$EXISTING_TOOLKIT_CONFIG" >/dev/null; then
+              echo "FQNs and Toolkit-v2 config unchanged — skipping keygen"
               exit 0
+            else
+              echo "Legacy or invalid Toolkit config found — forcing Toolkit-v2 keys"
+              FORCE_ARGS=(--force)
             fi
           fi
 
@@ -173,7 +182,7 @@ jobs:
             gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-next/generate-signed-http-keys:latest \
             python /app/bin/generate_signed_http_keys.py "nexus-tools" "$VERSIONED" \
               --fqns $FQNS \
-              --project "$PROJECT" $FORCE_FLAG
+              --project "$PROJECT" "${FORCE_ARGS[@]}"
 
       - name: Upload tool config to GCS
         run: |

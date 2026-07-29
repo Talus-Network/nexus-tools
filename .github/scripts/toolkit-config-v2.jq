@@ -1,0 +1,18 @@
+(type == "object")
+and (.version == 2)
+and ((keys - ["invoke_max_body_bytes", "signed_http", "version"]) | length == 0)
+and (.signed_http | type == "object")
+and (.signed_http.mode == "required")
+and ((.signed_http | keys - ["allowed_leaders", "allowed_leaders_path", "mode", "tools"]) | length == 0)
+and ((.signed_http.allowed_leaders_path | type) == "string")
+and ((.signed_http.allowed_leaders_path | length) > 0)
+and (.signed_http.tools | type == "object")
+and (($expected_fqns | length) > 0)
+and ((.signed_http.tools | keys | sort) == $expected_fqns)
+and ([
+  .signed_http.tools[] |
+  (type == "object")
+  and ((keys - ["replay_cache_ttl_ms", "tool_signing_key"]) | length == 0)
+  and ((.tool_signing_key | type) == "string")
+  and ((.tool_signing_key | length) > 0)
+] | all)
