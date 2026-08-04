@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+.codex-*
+.codex-*/
+target
+**/target
+**/build
+**/Move.lock
