@@ -1,8 +1,5 @@
 .git
 .agents
-.codex
-.codex-*
-.codex-*/
 target
 **/target
 **/build
