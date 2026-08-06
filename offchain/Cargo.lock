@@ -2341,7 +2341,7 @@ dependencies = [
 [[package]]
 name = "nexus-sdk"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a6438bcf8ef5080c7c5002dcdf5ae8943803df8e#a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=0573ccb44ab8d9537dbe9cd045b13254a372e59c#0573ccb44ab8d9537dbe9cd045b13254a372e59c"
 dependencies = [
  "allocative",
  "anyhow",
@@ -2384,7 +2384,7 @@ dependencies = [
 [[package]]
 name = "nexus-toolkit"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a6438bcf8ef5080c7c5002dcdf5ae8943803df8e#a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=0573ccb44ab8d9537dbe9cd045b13254a372e59c#0573ccb44ab8d9537dbe9cd045b13254a372e59c"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -3890,7 +3890,7 @@ dependencies = [
 [[package]]
 name = "sui-move"
 version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?branch=chore%2Fupdate_sdk_version#9a91dd8d6cb7d44e50bd3cc5908ed608dd2a4a87"
+source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
 dependencies = [
  "bcs",
  "ethnum",
@@ -3903,7 +3903,7 @@ dependencies = [
 [[package]]
 name = "sui-move-call"
 version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?branch=chore%2Fupdate_sdk_version#9a91dd8d6cb7d44e50bd3cc5908ed608dd2a4a87"
+source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
 dependencies = [
  "bcs",
  "serde",
@@ -3915,7 +3915,7 @@ dependencies = [
 [[package]]
 name = "sui-move-codegen"
 version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?branch=chore%2Fupdate_sdk_version#9a91dd8d6cb7d44e50bd3cc5908ed608dd2a4a87"
+source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -3931,7 +3931,7 @@ dependencies = [
 [[package]]
 name = "sui-move-derive"
 version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?branch=chore%2Fupdate_sdk_version#9a91dd8d6cb7d44e50bd3cc5908ed608dd2a4a87"
+source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3941,7 +3941,7 @@ dependencies = [
 [[package]]
 name = "sui-move-ptb"
 version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?branch=chore%2Fupdate_sdk_version#9a91dd8d6cb7d44e50bd3cc5908ed608dd2a4a87"
+source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
 dependencies = [
  "sui-move",
  "sui-move-call",
