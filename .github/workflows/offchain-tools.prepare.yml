@@ -177,11 +177,15 @@ jobs:
             fi
           fi
 
+          # The image sets ENTRYPOINT ["python", "/app/publish-tool-keys-gcp.py"];
+          # without the override our command line would be appended to it as
+          # positional arguments.
           docker run --rm \
+            --entrypoint python \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json \
             -v "${{ steps.auth-gcs.outputs.credentials_file_path }}:/tmp/creds.json:ro" \
             gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus/generate-signed-http-keys:latest \
-            python /app/bin/generate_signed_http_keys.py "nexus-tools" "$VERSIONED" \
+            /app/bin/generate_signed_http_keys.py "nexus-tools" "$VERSIONED" \
               --fqns $FQNS \
               --project "$PROJECT" "${FORCE_ARGS[@]}"
 
