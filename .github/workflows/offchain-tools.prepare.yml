@@ -185,11 +185,7 @@ jobs:
               --fqns $FQNS \
               --project "$PROJECT" "${FORCE_ARGS[@]}"
 
-      # TEMPORARILY DISABLED (if: false): this blob is tf-nexus-tools' input
-      # for the Cloud Run rollout — kept out until the on-chain-registration
-      # -only phase is done. Re-enable together with trigger-tf-apply.
       - name: Upload tool config to GCS
-        if: false
         run: |
           set -euo pipefail
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"

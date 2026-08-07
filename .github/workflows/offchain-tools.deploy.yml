@@ -53,12 +53,9 @@ jobs:
           {
             echo "list<<EOF"
             echo "${GHCR,,}"
-            # TEMPORARILY DISABLED: GCR push feeds only the Cloud Run
-            # rollout — kept out during the on-chain-registration-only
-            # phase. Re-enable together with trigger-tf-apply.
-            # if [ "${{ inputs.dry-run }}" = "false" ]; then
-            #   echo "gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-tools/${{ matrix.tool }}:sha-${SHA}"
-            # fi
+            if [ "${{ inputs.dry-run }}" = "false" ]; then
+              echo "gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus-tools/${{ matrix.tool }}:sha-${SHA}"
+            fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
