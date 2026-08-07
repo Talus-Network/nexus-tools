@@ -227,37 +227,41 @@ jobs:
   # materialized. We wait for the dispatched run to complete and inherit
   # its conclusion, so register-then-apply is one atomic gate. Uses
   # GH_ACCESS_TOKEN PAT because GITHUB_TOKEN can't dispatch in other repos.
-  trigger-tf-apply:
-    needs: [register]
-    if: always() && !cancelled() && needs.register.result == 'success'
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
-    steps:
-      - name: Require GH_ACCESS_TOKEN
-        run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::GH_ACCESS_TOKEN secret is not configured on this repo (or not scoped to it)."
-            exit 1
-          fi
-
-      # Polls actions:read endpoints only — works with fine-grained PATs.
-      # `gh run watch` would also fetch check annotations (checks:read),
-      # which fine-grained PATs cannot carry. ava-game uses the same
-      # action for the same reason.
-      - name: Dispatch tf-nexus-tools terraform apply and wait
-        uses: the-actions-org/workflow-dispatch@v4.0.0
-        with:
-          repo: Talus-Network/tf-nexus-tools
-          ref: production
-          workflow: Terraform
-          token: ${{ secrets.GH_ACCESS_TOKEN }}
-          inputs: '{}'
+  #
+  # TEMPORARILY DISABLED: the first nexus-testnet run does on-chain
+  # registration only — re-enable once tf-nexus-tools has the
+  # nexus-testnet network entry and the Cloud Run rollout is wanted.
+  # trigger-tf-apply:
+  #   needs: [register]
+  #   if: always() && !cancelled() && needs.register.result == 'success'
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     GH_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
+  #   steps:
+  #     - name: Require GH_ACCESS_TOKEN
+  #       run: |
+  #         if [ -z "${GH_TOKEN:-}" ]; then
+  #           echo "::error::GH_ACCESS_TOKEN secret is not configured on this repo (or not scoped to it)."
+  #           exit 1
+  #         fi
+  #
+  #     # Polls actions:read endpoints only — works with fine-grained PATs.
+  #     # `gh run watch` would also fetch check annotations (checks:read),
+  #     # which fine-grained PATs cannot carry. ava-game uses the same
+  #     # action for the same reason.
+  #     - name: Dispatch tf-nexus-tools terraform apply and wait
+  #       uses: the-actions-org/workflow-dispatch@v4.0.0
+  #       with:
+  #         repo: Talus-Network/tf-nexus-tools
+  #         ref: production
+  #         workflow: Terraform
+  #         token: ${{ secrets.GH_ACCESS_TOKEN }}
+  #         inputs: '{}'
 
   # ── ci-gate: single required status check for branch protection ──
   ci-gate:
     if: always()
-    needs: [discover, deploy, prepare, register, readiness, trigger-tf-apply]
+    needs: [discover, deploy, prepare, register, readiness]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -269,7 +273,6 @@ jobs:
             [prepare]="${{ needs.prepare.result }}"
             [register]="${{ needs.register.result }}"
             [readiness]="${{ needs.readiness.result }}"
-            [trigger-tf-apply]="${{ needs.trigger-tf-apply.result }}"
           )
           for j in "${!r[@]}"; do
             v="${r[$j]}"
