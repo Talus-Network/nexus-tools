@@ -109,8 +109,12 @@ jobs:
           # (static deploy needed 1e9 MIST for heavy twitter schemas).
           # Leaves a tiny leftover so we still have a distinct
           # collateral coin per call.
+          # sui 1.77 wrapped `client gas --json` in {gasCoins, addressMistBalance, ...};
+          # 1.76 returned the bare coin array. Normalize to the array.
+          gas_coins() { sui client gas --json | jq '(.gasCoins // .)'; }
+
           echo "::group::wallet before consolidation"
-          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          gas_coins | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
           echo "::endgroup::"
 
           # Target 4 coins so we have headroom for several register
@@ -120,8 +124,8 @@ jobs:
           # budget for heavy schemas).
           MAX_MERGES=40
           i=0
-          while [ "$(sui client gas --json | jq 'length')" -gt 4 ] && [ "$i" -lt "$MAX_MERGES" ]; do
-            INFO=$(sui client gas --json)
+          while [ "$(gas_coins | jq 'length')" -gt 4 ] && [ "$i" -lt "$MAX_MERGES" ]; do
+            INFO=$(gas_coins)
             TO_MERGE=$(echo "$INFO" | jq -r 'sort_by(.mistBalance|tonumber) | .[0].gasCoinId')
             PRIMARY=$(echo "$INFO"  | jq -r 'sort_by(.mistBalance|tonumber) | .[1].gasCoinId')
             echo "merge[$i]: $TO_MERGE -> $PRIMARY"
@@ -133,7 +137,7 @@ jobs:
           done
 
           echo "::group::wallet after consolidation"
-          sui client gas --json | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
+          gas_coins | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
           echo "::endgroup::"
 
       - name: Register offchain tools
@@ -189,7 +193,8 @@ jobs:
               # wallet per call and pin the largest coin as gas and
               # smallest (distinct) coin as collateral — fresh object
               # refs every call, no chance of overlap.
-              GAS_INFO=$(sui client gas --json)
+              # (.gasCoins // .) — sui 1.77 object wrapper vs 1.76 bare array
+              GAS_INFO=$(sui client gas --json | jq '(.gasCoins // .)')
               echo "::group::wallet coins before $FQN"
               echo "$GAS_INFO" | jq 'map({gasCoinId, mistBalance}) | sort_by(.mistBalance|tonumber) | reverse'
               echo "$GAS_INFO" | jq 'length as $n | (map(.mistBalance|tonumber) | add) as $sum | {coin_count: $n, total_mist: $sum, total_sui: ($sum/1000000000)}'
