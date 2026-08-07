@@ -149,18 +149,6 @@ jobs:
           # Falls back to SUI_NETWORK on existing testnet/mainnet envs.
           NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
-          # Snapshot already-registered FQNs once up front. Each
-          # `nexus tool register` call costs ~1-2s even for an
-          # already-registered FQN (it submits a tx, the Move call
-          # aborts with EFqnAlreadyExists, we detect it and preserve).
-          # Skipping the CLI call entirely for known-registered FQNs
-          # shortens a typical re-run from minutes to seconds.
-          REGISTERED_FQNS="${RUNNER_TEMP}/registered_fqns.txt"
-          nexus tool list --json 2>/dev/null | jq -r '.[].fqn' > "$REGISTERED_FQNS" || true
-          echo "::group::Already-registered FQNs on chain ($(wc -l < "$REGISTERED_FQNS"))"
-          cat "$REGISTERED_FQNS"
-          echo "::endgroup::"
-
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             META="${META_DIR}/${TOOL}.json"
             if [ ! -f "$META" ]; then
@@ -181,19 +169,6 @@ jobs:
             jq -c '.[]' "$META" | while read -r TOOL_META; do
               FQN=$(echo "$TOOL_META" | jq -r '.fqn')
               REG_PATH="gs://${BUCKET}/${NETWORK}/offchain/registration/${TOOL}/${FQN}.json"
-
-              # Skip the CLI call entirely if the FQN is already
-              # registered on chain (snapshot taken above). We still
-              # verify the GCS file is present so downstream
-              # signing-key / toolkit-config steps don't run blind.
-              if grep -qxF "$FQN" "$REGISTERED_FQNS"; then
-                if ! gsutil -q stat "$REG_PATH" 2>/dev/null; then
-                  echo "::error::$FQN registered on-chain but no caps in GCS ($REG_PATH)"
-                  exit 1
-                fi
-                echo "  ✓ $FQN already registered — skipping CLI call"
-                continue
-              fi
 
               META_URL=$(echo "$TOOL_META" | jq -r '.url')
               # Strip scheme + host:port, keep the path (defaulting to /).
@@ -237,16 +212,10 @@ jobs:
                 exit 1
               fi
               GAS_BAL=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" '.[] | select(.gasCoinId == $g) | .mistBalance')
-              # Collateral can be any other coin (split is 1 MIST), so
-              # take the smallest one not chosen as gas.
-              COLL_COIN=$(echo "$GAS_INFO" | jq -r --arg g "$GAS_COIN" \
-                'map(select(.gasCoinId != $g)) | sort_by(.mistBalance|tonumber) | first.gasCoinId // empty')
-              if [ -z "$COLL_COIN" ]; then
-                echo "::error::Wallet has only one coin; need ≥2 (gas + collateral)"
-                exit 1
-              fi
-              COLL_BAL=$(echo "$GAS_INFO" | jq -r --arg c "$COLL_COIN" '.[] | select(.gasCoinId == $c) | .mistBalance')
-              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) collateral=$COLL_COIN ($COLL_BAL MIST) budget=$GAS_BUDGET"
+              # Collateral is a US-token coin (1 US per registration); the
+              # CLI auto-picks the wallet's owned Coin<US> and returns the
+              # remainder, so no coin is selected here.
+              echo "  selected gas=$GAS_COIN ($GAS_BAL MIST) budget=$GAS_BUDGET"
 
               echo "::group::CLI invocation for $FQN"
               echo "  url: $TOOL_URL"
@@ -265,7 +234,6 @@ jobs:
                     --from-meta - \
                     --url "$TOOL_URL" \
                     --sui-gas-coin "$GAS_COIN" \
-                    --collateral-coin "$COLL_COIN" \
                     --sui-gas-budget "$GAS_BUDGET" \
                     --invocation-cost 0 \
                     --no-save \
@@ -284,20 +252,9 @@ jobs:
               fi
 
               ENTRY=$(echo "$OUT" | jq -c '.[0]')
+              # The CLI inspects canonical chain state before submitting, so
+              # an already-registered FQN comes back flagged without a tx.
               ALREADY=$(echo "$ENTRY" | jq -r '.already_registered // false')
-              ERR=$(echo "$ENTRY" | jq -r '.error // empty')
-
-              # v1.0.0 CLI flags already-registered by string-matching the
-              # outer entry name, but the MoveAbort surfaces from the inner
-              # helper `register_tool_` at instruction 14 (the
-              # EFqnAlreadyExists assertion in tool_registry.move:594), so
-              # the CLI misses it. Treat that exact signature as
-              # already-registered. TODO: fix upstream in nexus-sdk.
-              if [ "$ALREADY" != "true" ] && [ -n "$ERR" ] \
-                 && echo "$ERR" | grep -q 'function_name: Some(Identifier("register_tool_"))' \
-                 && echo "$ERR" | grep -q 'instruction: 14'; then
-                ALREADY="true"
-              fi
 
               if [ "$ALREADY" = "true" ]; then
                 # Caps must already exist in GCS from a prior run; refusing
@@ -312,8 +269,10 @@ jobs:
               fi
 
               TOOL_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_tool_id // empty')
-              GAS_CAP=$(echo "$ENTRY" | jq -r '.owner_cap_over_gas_id // empty')
-              if [ -z "$TOOL_CAP" ] || [ -z "$GAS_CAP" ]; then
+              # Named payment_admin_cap_id on the deployed CLI build; upstream
+              # later renamed it cashier_admin_cap_id — accept both.
+              PAY_CAP=$(echo "$ENTRY" | jq -r '.payment_admin_cap_id // .cashier_admin_cap_id // empty')
+              if [ -z "$TOOL_CAP" ] || [ -z "$PAY_CAP" ]; then
                 echo "::error::register output missing caps for $FQN: $ENTRY"
                 exit 1
               fi
@@ -322,10 +281,10 @@ jobs:
               # (signing_key_hash, tool_kid) survive re-registration.
               EXISTING=$(gsutil cat "$REG_PATH" 2>/dev/null || echo '{}')
               echo "$EXISTING" | jq \
-                --arg fqn "$FQN" --arg t "$TOOL_CAP" --arg g "$GAS_CAP" \
-                '. + {fqn: $fqn, owner_cap_over_tool: $t, owner_cap_over_gas: $g}' \
+                --arg fqn "$FQN" --arg t "$TOOL_CAP" --arg p "$PAY_CAP" \
+                '. + {fqn: $fqn, owner_cap_over_tool: $t, payment_admin_cap: $p}' \
                 | gsutil cp - "$REG_PATH"
-              echo "  + $FQN registered (tool_cap=$TOOL_CAP gas_cap=$GAS_CAP)"
+              echo "  + $FQN registered (tool_cap=$TOOL_CAP payment_cap=$PAY_CAP)"
             done
           done
 
