@@ -303,12 +303,18 @@ jobs:
           BUCKET="${{ vars.GCP_PROJECT_ID }}-nexus-tools"
           NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
 
+          # Same namespacing rule as prepare's keygen step.
+          SECRET_NS="nexus-tools"
+          if [ "${{ vars.TOOLS_NAMESPACE }}" != "" ] && [ "${{ vars.TOOLS_NAMESPACE }}" != "${{ vars.SUI_NETWORK }}" ]; then
+            SECRET_NS="nexus-tools-${{ vars.TOOLS_NAMESPACE }}"
+          fi
+
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
             VERSIONED="${TOOL}-v${VERSION}"
 
             KEYS=$(gcloud secrets versions access latest \
-              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --secret="${SECRET_NS}-${VERSIONED}-signed-http-keys" \
               --project="$PROJECT")
             KEYS_HASH=$(echo "$KEYS" | jq -c '[.keys_registry[] | {fqn, public_key_hex}]' | sha256sum | cut -c1-16)
 
@@ -345,16 +351,22 @@ jobs:
           META_DIR="${{ steps.artifacts.outputs.meta_dir }}"
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
 
+          # Same namespacing rule as prepare's keygen step.
+          SECRET_NS="nexus-tools"
+          if [ "${{ vars.TOOLS_NAMESPACE }}" != "" ] && [ "${{ vars.TOOLS_NAMESPACE }}" != "${{ vars.SUI_NETWORK }}" ]; then
+            SECRET_NS="nexus-tools-${{ vars.TOOLS_NAMESPACE }}"
+          fi
+
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
             VERSIONED="${TOOL}-v${VERSION}"
-            SECRET="nexus-tools-${VERSIONED}-signed-http-toolkit-config"
+            SECRET="${SECRET_NS}-${VERSIONED}-signed-http-toolkit-config"
 
             gcloud secrets describe "$SECRET" --project="$PROJECT" >/dev/null 2>&1 \
               || gcloud secrets create "$SECRET" --project="$PROJECT" --replication-policy=automatic
 
             SKELETON=$(gcloud secrets versions access latest \
-              --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+              --secret="${SECRET_NS}-${VERSIONED}-signed-http-keys" \
               --project="$PROJECT" \
               | jq -cS '.toolkit_config')
             EXPECTED_FQNS=$(jq -c '[.[].fqn] | sort' "${META_DIR}/${TOOL}.json")

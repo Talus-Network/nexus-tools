@@ -94,8 +94,13 @@ jobs:
           # v2 uses the full RC suffix as the namespace directory name.
           if [ "${{ vars.TOOLS_NAMESPACE }}" != "" ] && [ "${{ vars.TOOLS_NAMESPACE }}" != "${{ vars.SUI_NETWORK }}" ]; then
             ALLOWED_LEADERS_SUBDIR="${{ vars.NEXUS_TAG }}/${{ vars.TOOLS_NAMESPACE }}"
+            # Per-namespace toolkit-config secret; tf-nexus-tools reads this
+            # via try(signed_http.secret_id, <legacy name>) so blobs without
+            # it keep resolving to the old shared name.
+            SIGNED_HTTP_SECRET_ID="nexus-tools-${{ vars.TOOLS_NAMESPACE }}-${VERSIONED}-signed-http-toolkit-config"
           else
             ALLOWED_LEADERS_SUBDIR=""
+            SIGNED_HTTP_SECRET_ID=""
           fi
           jq -n \
             --arg name "$VERSIONED" \
@@ -105,6 +110,7 @@ jobs:
             --arg cmd "${{ matrix.command }}" \
             --arg nexus_tag "${{ vars.NEXUS_TAG }}" \
             --arg allowed_leaders_subdir "$ALLOWED_LEADERS_SUBDIR" \
+            --arg signed_http_secret_id "$SIGNED_HTTP_SECRET_ID" \
             --argjson extra_env "$EXTRA_ENV" \
             --argjson resources "$RESOURCES" \
             '{
@@ -121,7 +127,8 @@ jobs:
               } + $extra_env),
               command: $cmd,
               ports: [{containerPort: 8080}],
-              signed_http: {enabled: true},
+              signed_http: ({enabled: true}
+                + (if $signed_http_secret_id != "" then {secret_id: $signed_http_secret_id} else {} end)),
               resources: $resources
             } + ($allowed_leaders_subdir | if . != "" then {allowed_leaders_subdir: .} else {} end)' > "$DIR/${VERSIONED}.json"
           echo "config=$DIR/${VERSIONED}.json" >> "$GITHUB_OUTPUT"
@@ -149,12 +156,20 @@ jobs:
           PROJECT="${{ vars.GCP_PROJECT_ID }}"
           META="${RUNNER_TEMP}/prepare/meta/${{ matrix.tool }}.json"
 
+          # Content versions are track-agnostic, so un-namespaced secret ids
+          # collide across deploy tracks. Namespace them when TOOLS_NAMESPACE
+          # is set; legacy testnet/mainnet envs keep the old names.
+          SECRET_NS="nexus-tools"
+          if [ "${{ vars.TOOLS_NAMESPACE }}" != "" ] && [ "${{ vars.TOOLS_NAMESPACE }}" != "${{ vars.SUI_NETWORK }}" ]; then
+            SECRET_NS="nexus-tools-${{ vars.TOOLS_NAMESPACE }}"
+          fi
+
           FQNS=$(jq -r '.[].fqn' "$META" | tr '\n' ' ' | xargs)
           echo "FQNs for $VERSIONED: $FQNS"
 
           FORCE_ARGS=()
           EXISTING=$(gcloud secrets versions access latest \
-            --secret="nexus-tools-${VERSIONED}-signed-http-keys" \
+            --secret="${SECRET_NS}-${VERSIONED}-signed-http-keys" \
             --project="$PROJECT" 2>/dev/null || echo "")
           if [[ -n "$EXISTING" ]]; then
             EXPECTED_FQNS=$(jq -c '[.[].fqn] | sort' "$META")
@@ -185,7 +200,7 @@ jobs:
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json \
             -v "${{ steps.auth-gcs.outputs.credentials_file_path }}:/tmp/creds.json:ro" \
             gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus/generate-signed-http-keys:latest \
-            /app/bin/generate_signed_http_keys.py "nexus-tools" "$VERSIONED" \
+            /app/bin/generate_signed_http_keys.py "$SECRET_NS" "$VERSIONED" \
               --fqns $FQNS \
               --project "$PROJECT" "${FORCE_ARGS[@]}"
 
