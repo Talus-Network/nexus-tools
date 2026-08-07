@@ -15,6 +15,3 @@ sdk/tests/move/onchain_tool_test/Move.lock
 .DS_Store
 
 **/Move.lock
-
-# Local-only planning artifacts (brainstorming specs, plans, notes)
-docs/superpowers/
