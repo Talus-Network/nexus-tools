@@ -19,6 +19,7 @@ jobs:
       ${{
         (github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
         (github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
+        (github.base_ref || github.ref_name) == 'nexus-testnet' && 'nexus-testnet' ||
         'testnet'
       }}
     strategy:
