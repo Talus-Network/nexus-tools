@@ -1,0 +1,6 @@
+.git
+.agents
+target
+**/target
+**/build
+**/Move.lock

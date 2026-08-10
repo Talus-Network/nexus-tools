@@ -5,7 +5,7 @@ members = ["tools/*"]
 [workspace.package]
 edition = "2021" # "2024" does not compile.
 version = "2.0.0-rc.4"
-repository = "https://github.com/Talus-Network/nexus-sdk"
+repository = "https://github.com/Talus-Network/nexus-tools"
 homepage = "https://talus.network"
 license = "Apache-2.0"
 readme = "README.md"
@@ -49,13 +49,13 @@ features = ["full"]
 # For local dev convenience
 # path = "../../nexus-sdk/sdk"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
+rev = "0573ccb44ab8d9537dbe9cd045b13254a372e59c"
 
 [workspace.dependencies.nexus-toolkit]
 # For local dev convenience
 # path = "../../nexus-sdk/toolkit-rust"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "a6438bcf8ef5080c7c5002dcdf5ae8943803df8e"
+rev = "0573ccb44ab8d9537dbe9cd045b13254a372e59c"
 
 
 [profile.release]
