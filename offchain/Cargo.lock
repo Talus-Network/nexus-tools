@@ -589,6 +589,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "convert_case"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2341,13 +2350,14 @@ dependencies = [
 [[package]]
 name = "nexus-sdk"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=0573ccb44ab8d9537dbe9cd045b13254a372e59c#0573ccb44ab8d9537dbe9cd045b13254a372e59c"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=de984a68f79c58a56491d8ac9f7356c090106df0#de984a68f79c58a56491d8ac9f7356c090106df0"
 dependencies = [
  "allocative",
  "anyhow",
  "base64 0.21.7",
  "bcs",
  "chrono",
+ "convert_case",
  "ed25519-dalek",
  "enum_dispatch",
  "futures",
@@ -2384,7 +2394,7 @@ dependencies = [
 [[package]]
 name = "nexus-toolkit"
 version = "2.0.0-rc.4"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=0573ccb44ab8d9537dbe9cd045b13254a372e59c#0573ccb44ab8d9537dbe9cd045b13254a372e59c"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=de984a68f79c58a56491d8ac9f7356c090106df0#de984a68f79c58a56491d8ac9f7356c090106df0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -3601,6 +3611,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -4537,6 +4548,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "untrusted"
