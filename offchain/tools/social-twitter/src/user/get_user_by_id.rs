@@ -5,20 +5,12 @@
 use {
     crate::{
         error::{parse_twitter_response, TwitterErrorKind, TwitterErrorResponse, TwitterResult},
+        list::models::Includes,
         tweet::{
             models::{ExpansionField, TweetField, UserField},
             TWITTER_API_BASE,
         },
-        user::models::{
-            Affiliation,
-            ConnectionStatus,
-            Entities,
-            PublicMetrics,
-            SubscriptionType,
-            UserResponse,
-            VerifiedType,
-            Withheld,
-        },
+        user::models::{UserData, UserResponse},
     },
     reqwest::Client,
     ::{
@@ -57,66 +49,11 @@ pub(crate) struct Input {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
     Ok {
-        /// The user's unique identifier
-        id: String,
-        /// The user's display name
-        name: String,
-        /// The user's @username
-        username: String,
-        /// Whether the user's account is protected
+        /// The retrieved user
+        data: UserData,
+        /// Additional entities related to the user
         #[serde(skip_serializing_if = "Option::is_none")]
-        protected: Option<bool>,
-        /// The user's affiliation information
-        #[serde(skip_serializing_if = "Option::is_none")]
-        affiliation: Option<Affiliation>,
-        /// The user's connection status
-        #[serde(skip_serializing_if = "Option::is_none")]
-        connection_status: Option<Vec<ConnectionStatus>>,
-        /// When the user's account was created
-        #[serde(skip_serializing_if = "Option::is_none")]
-        created_at: Option<String>,
-        /// The user's profile description/bio
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        /// Entities found in the user's description (hashtags, mentions, URLs)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        entities: Option<Entities>,
-        /// The user's location
-        #[serde(skip_serializing_if = "Option::is_none")]
-        location: Option<String>,
-        /// ID of the user's most recent tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        most_recent_tweet_id: Option<String>,
-        /// ID of the user's pinned tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pinned_tweet_id: Option<String>,
-        /// URL of the user's profile banner image
-        #[serde(skip_serializing_if = "Option::is_none")]
-        profile_banner_url: Option<String>,
-        /// URL of the user's profile image
-        #[serde(skip_serializing_if = "Option::is_none")]
-        profile_image_url: Option<String>,
-        /// Public metrics about the user (followers, following, tweet count)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        public_metrics: Option<PublicMetrics>,
-        /// Whether the user accepts direct messages
-        #[serde(skip_serializing_if = "Option::is_none")]
-        receives_your_dm: Option<bool>,
-        /// The user's subscription type
-        #[serde(skip_serializing_if = "Option::is_none")]
-        subscription_type: Option<SubscriptionType>,
-        /// The user's website URL
-        #[serde(skip_serializing_if = "Option::is_none")]
-        url: Option<String>,
-        /// Whether the user is verified
-        #[serde(skip_serializing_if = "Option::is_none")]
-        verified: Option<bool>,
-        /// The user's verification type
-        #[serde(skip_serializing_if = "Option::is_none")]
-        verified_type: Option<VerifiedType>,
-        /// Withholding information for the user
-        #[serde(skip_serializing_if = "Option::is_none")]
-        withheld: Option<Withheld>,
+        includes: Option<Includes>,
     },
     Err {
         /// Error message if the user lookup failed
@@ -163,27 +100,8 @@ impl NexusTool for GetUserById {
             Ok(response) => {
                 if let Some(user) = response.data {
                     Output::Ok {
-                        id: user.id,
-                        name: user.name,
-                        username: user.username,
-                        protected: user.protected,
-                        affiliation: user.affiliation,
-                        connection_status: user.connection_status,
-                        created_at: user.created_at,
-                        description: user.description,
-                        entities: user.entities,
-                        location: user.location,
-                        most_recent_tweet_id: user.most_recent_tweet_id,
-                        pinned_tweet_id: user.pinned_tweet_id,
-                        profile_banner_url: user.profile_banner_url,
-                        profile_image_url: user.profile_image_url,
-                        public_metrics: user.public_metrics,
-                        receives_your_dm: user.receives_your_dm,
-                        subscription_type: user.subscription_type,
-                        url: user.url,
-                        verified: user.verified,
-                        verified_type: user.verified_type,
-                        withheld: user.withheld,
+                        data: user,
+                        includes: response.includes,
                     }
                 } else {
                     Output::Err {
@@ -309,6 +227,13 @@ mod tests {
                         "name": "X Dev",
                         "username": "TwitterDev",
                         "protected": false
+                    },
+                    "includes": {
+                        "users": [{
+                            "id": "12",
+                            "name": "Expanded User",
+                            "username": "expanded"
+                        }]
                     }
                 })
                 .to_string(),
@@ -319,20 +244,23 @@ mod tests {
         let output = tool.invoke(create_test_input()).await;
 
         match output {
-            Output::Ok {
-                id, name, username, ..
-            } => {
+            Output::Ok { data, includes } => {
                 assert_eq!(
-                    id, "2244994945",
+                    data.id, "2244994945",
                     "Expected user ID to be '2244994945', got: {}",
-                    id
+                    data.id
                 );
-                assert_eq!(name, "X Dev", "Expected name to be 'X Dev', got: {}", name);
                 assert_eq!(
-                    username, "TwitterDev",
-                    "Expected username to be 'TwitterDev', got: {}",
-                    username
+                    data.name, "X Dev",
+                    "Expected name to be 'X Dev', got: {}",
+                    data.name
                 );
+                assert_eq!(
+                    data.username, "TwitterDev",
+                    "Expected username to be 'TwitterDev', got: {}",
+                    data.username
+                );
+                assert_eq!(includes.unwrap().users.unwrap()[0].username, "expanded");
             }
             Output::Err {
                 reason,
@@ -526,19 +454,21 @@ mod tests {
         let output = tool.invoke(create_test_input()).await;
 
         match output {
-            Output::Ok {
-                id, name, username, ..
-            } => {
+            Output::Ok { data, .. } => {
                 assert_eq!(
-                    id, "2244994945",
+                    data.id, "2244994945",
                     "Expected user ID to be '2244994945', got: {}",
-                    id
+                    data.id
                 );
-                assert_eq!(name, "X Dev", "Expected name to be 'X Dev', got: {}", name);
                 assert_eq!(
-                    username, "TwitterDev",
+                    data.name, "X Dev",
+                    "Expected name to be 'X Dev', got: {}",
+                    data.name
+                );
+                assert_eq!(
+                    data.username, "TwitterDev",
                     "Expected username to be 'TwitterDev', got: {}",
-                    username
+                    data.username
                 );
             }
             Output::Err {
