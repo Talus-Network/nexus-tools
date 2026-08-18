@@ -6,24 +6,7 @@ use {
     crate::{
         error::{parse_twitter_response, TwitterErrorKind, TwitterErrorResponse, TwitterResult},
         tweet::{
-            models::{
-                Attachments,
-                ContextAnnotation,
-                EditControls,
-                Entities,
-                Geo,
-                GetTweetResponse,
-                Includes,
-                Meta,
-                NonPublicMetrics,
-                NoteTweet,
-                OrganicMetrics,
-                PromotedMetrics,
-                PublicMetrics,
-                ReferencedTweet,
-                Scopes,
-                Withheld,
-            },
+            models::{GetTweetResponse, Includes, Meta, Tweet},
             TWITTER_API_BASE,
         },
     },
@@ -48,82 +31,8 @@ pub(crate) struct Input {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
     Ok {
-        /// The tweet's unique identifier
-        id: String, // mandatory
-        /// The tweet's content text
-        text: String, // mandatory
-        /// The ID of the tweet's author
-        #[serde(skip_serializing_if = "Option::is_none")]
-        author_id: Option<String>,
-        /// The timestamp when the tweet was created
-        #[serde(skip_serializing_if = "Option::is_none")]
-        created_at: Option<String>,
-        /// The username of the tweet's author
-        #[serde(skip_serializing_if = "Option::is_none")]
-        username: Option<String>,
-        /// Media and polls attached to the tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        attachments: Option<Attachments>,
-        /// Community ID if the tweet belongs to a community
-        #[serde(skip_serializing_if = "Option::is_none")]
-        community_id: Option<String>,
-        /// Annotations about the tweet content
-        #[serde(skip_serializing_if = "Option::is_none")]
-        context_annotations: Option<Vec<ContextAnnotation>>,
-        /// ID of the conversation this tweet belongs to
-        #[serde(skip_serializing_if = "Option::is_none")]
-        conversation_id: Option<String>,
-        /// Controls for editing the tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        edit_controls: Option<EditControls>,
-        /// IDs of tweets in the edit history
-        #[serde(skip_serializing_if = "Option::is_none")]
-        edit_history_tweet_ids: Option<Vec<String>>,
-        /// Entities in the tweet (hashtags, mentions, URLs)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        entities: Option<Entities>,
-        /// Geographic information
-        #[serde(skip_serializing_if = "Option::is_none")]
-        geo: Option<Geo>,
-        /// ID of the user being replied to
-        #[serde(skip_serializing_if = "Option::is_none")]
-        in_reply_to_user_id: Option<String>,
-        /// Language of the tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        lang: Option<String>,
-        /// Private metrics about the tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        non_public_metrics: Option<NonPublicMetrics>,
-        /// Extended note content
-        #[serde(skip_serializing_if = "Option::is_none")]
-        note_tweet: Option<NoteTweet>,
-        /// Organic engagement metrics
-        #[serde(skip_serializing_if = "Option::is_none")]
-        organic_metrics: Option<OrganicMetrics>,
-        /// Whether the tweet might contain sensitive content
-        #[serde(skip_serializing_if = "Option::is_none")]
-        possibly_sensitive: Option<bool>,
-        /// Metrics from promoted content
-        #[serde(skip_serializing_if = "Option::is_none")]
-        promoted_metrics: Option<PromotedMetrics>,
-        /// Public engagement metrics (likes, retweets, etc.)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        public_metrics: Option<PublicMetrics>,
-        /// Tweets referenced by this tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        referenced_tweets: Option<Vec<ReferencedTweet>>,
-        /// Who can reply to this tweet
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reply_settings: Option<String>,
-        /// Visibility scopes
-        #[serde(skip_serializing_if = "Option::is_none")]
-        scopes: Option<Scopes>,
-        /// Source of the tweet (client application)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-        /// Withholding information
-        #[serde(skip_serializing_if = "Option::is_none")]
-        withheld: Option<Withheld>,
+        /// The retrieved tweet
+        data: Tweet,
         /// Additional entities related to the tweet:
         /// - media: Images and videos
         /// - places: Geographic locations
@@ -193,32 +102,7 @@ impl NexusTool for GetTweet {
             Ok(response) => {
                 if let Some(tweet) = response.data {
                     Output::Ok {
-                        id: tweet.id,
-                        text: tweet.text,
-                        author_id: tweet.author_id,
-                        created_at: tweet.created_at,
-                        username: tweet.username,
-                        attachments: tweet.attachments,
-                        community_id: tweet.community_id,
-                        context_annotations: tweet.context_annotations,
-                        conversation_id: tweet.conversation_id,
-                        edit_controls: tweet.edit_controls,
-                        edit_history_tweet_ids: tweet.edit_history_tweet_ids,
-                        entities: tweet.entities,
-                        geo: tweet.geo,
-                        in_reply_to_user_id: tweet.in_reply_to_user_id,
-                        lang: tweet.lang,
-                        non_public_metrics: tweet.non_public_metrics,
-                        note_tweet: tweet.note_tweet,
-                        organic_metrics: tweet.organic_metrics,
-                        possibly_sensitive: tweet.possibly_sensitive,
-                        promoted_metrics: tweet.promoted_metrics,
-                        public_metrics: tweet.public_metrics,
-                        referenced_tweets: tweet.referenced_tweets,
-                        reply_settings: tweet.reply_settings,
-                        scopes: tweet.scopes,
-                        source: tweet.source,
-                        withheld: tweet.withheld,
+                        data: tweet,
                         includes: response.includes,
                         meta: response.meta,
                     }
@@ -324,19 +208,12 @@ mod tests {
 
         // Verify the response
         match output {
-            Output::Ok {
-                id,
-                text,
-                author_id,
-                created_at,
-                username,
-                ..
-            } => {
-                assert_eq!(id, "1346889436626259968");
-                assert_eq!(text, "Learn how to use the user Tweet timeline and user mention timeline endpoints in the X API v2 to explore Tweet\\u2026 https:\\/\\/t.co\\/56a0vZUx7i");
-                assert_eq!(author_id, Some("2244994945".to_string()));
-                assert!(created_at.is_some());
-                assert_eq!(username, Some("XDevelopers".to_string()));
+            Output::Ok { data, .. } => {
+                assert_eq!(data.id, "1346889436626259968");
+                assert_eq!(data.text, "Learn how to use the user Tweet timeline and user mention timeline endpoints in the X API v2 to explore Tweet\\u2026 https:\\/\\/t.co\\/56a0vZUx7i");
+                assert_eq!(data.author_id, Some("2244994945".to_string()));
+                assert!(data.created_at.is_some());
+                assert_eq!(data.username, Some("XDevelopers".to_string()));
             }
             Output::Err {
                 reason,
