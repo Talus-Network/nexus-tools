@@ -3,7 +3,9 @@
 Synthetic load tool for Nexus stress campaigns. Input ports:
 
 - `sleep_ms` — handler delay before responding (max 60 000).
-- `payload_bytes` — size of the `payload` output padding (max 262 144).
+- `payload_bytes` — size of the `payload` output padding (max 61 000, kept
+  under the protocol's 61 440-byte inline-data cap so the output never hits
+  the leader's `output_serialization_error` path).
 - `error_rate` — probability in [0, 1] of returning the `err` variant.
 - `echo` — i64 passthrough to the `echo` output port, for chaining vertices
   with real data flow.

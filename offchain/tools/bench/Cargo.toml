@@ -33,3 +33,8 @@ toml = "0.8"
 
 [dev-dependencies]
 serde_json.workspace = true
+# `test-util` gives `#[tokio::test(start_paused = true)]` a virtual,
+# auto-advancing clock so the MAX_SLEEP_MS (60 s) boundary test does not
+# burn real wall-clock time on every run. Dev-only: never links into the
+# release `bench` binary.
+tokio = { workspace = true, features = ["test-util"] }

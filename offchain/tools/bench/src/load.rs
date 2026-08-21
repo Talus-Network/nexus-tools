@@ -14,7 +14,13 @@ use {
 };
 
 const MAX_SLEEP_MS: u64 = 60_000;
-const MAX_PAYLOAD_BYTES: u64 = 262_144;
+// The protocol's inline-data cap is 61_440 bytes
+// (nexus-next/sui/primitives/sources/data.move:44,80: MAX_INLINE_DATA_BYTES).
+// A payload above that makes the leader's output serialization fail with
+// HTTP 500 (`output_serialization_error`), which reads as a tool invoke
+// failure rather than the payload-size signal a stress run wants. Stay
+// under the cap with headroom for the surrounding JSON envelope.
+const MAX_PAYLOAD_BYTES: u64 = 61_000;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -208,10 +214,25 @@ mod tests {
     #[tokio::test]
     async fn rejects_out_of_range_inputs() {
         let tool = BenchLoad::new().await;
-        assert!(matches!(
-            tool.invoke(input(0, 0, 1.5, 0)).await,
-            Output::Err { .. }
-        ));
+
+        // error_rate above 1 and below 0 both fail range validation (not
+        // the random-error path) — assert on the reason text so a mutant
+        // that deletes the range half of the guard (leaving only the
+        // is_finite check) still gets caught.
+        match tool.invoke(input(0, 0, 1.5, 0)).await {
+            Output::Err { reason } => assert!(
+                reason.contains("not within"),
+                "expected a range-validation reason, got: {reason}"
+            ),
+            Output::Ok { .. } => panic!("error_rate 1.5 must be rejected"),
+        }
+        match tool.invoke(input(0, 0, -0.5, 0)).await {
+            Output::Err { reason } => assert!(
+                reason.contains("not within"),
+                "expected a range-validation reason, got: {reason}"
+            ),
+            Output::Ok { .. } => panic!("error_rate -0.5 must be rejected"),
+        }
         assert!(matches!(
             tool.invoke(input(0, 0, f64::NAN, 0)).await,
             Output::Err { .. }
@@ -224,6 +245,38 @@ mod tests {
             tool.invoke(input(0, MAX_PAYLOAD_BYTES + 1, 0.0, 0)).await,
             Output::Err { .. }
         ));
+    }
+
+    // `start_paused` runs the tokio timer on a virtual, auto-advancing
+    // clock so the MAX_SLEEP_MS (60 s) boundary check below does not burn
+    // 60 real seconds of test wall-clock time on every run.
+    #[tokio::test(start_paused = true)]
+    async fn accepts_values_exactly_at_the_caps() {
+        // Boundary values must pass (kills `>` -> `>=` mutants on the
+        // guards above) and, for payload_bytes, must actually stay under
+        // the protocol's MAX_INLINE_DATA_BYTES so the leader's output
+        // serialization does not 500 (F1: reviewer verified 61_438 works
+        // live against the real protocol cap of 61_440).
+        let tool = BenchLoad::new().await;
+        assert!(matches!(
+            tool.invoke(input(MAX_SLEEP_MS, 0, 0.0, 0)).await,
+            Output::Ok { .. }
+        ));
+        match tool.invoke(input(0, MAX_PAYLOAD_BYTES, 0.0, 0)).await {
+            Output::Ok { payload, .. } => {
+                assert_eq!(payload.len(), MAX_PAYLOAD_BYTES as usize)
+            }
+            Output::Err { reason } => panic!("unexpected err at the payload cap: {reason}"),
+        }
+    }
+
+    #[test]
+    fn registers_a_five_second_timeout() {
+        // Load-bearing for the stress suite's walk-timeout model: the
+        // on-chain walk window is (registered timeout + 5 s leader-eval
+        // buffer) = 10 s, hard expiry = 2x that = 20 s. A mutant that
+        // changes this to e.g. 10 s silently doubles both numbers.
+        assert_eq!(BenchLoad::timeout(), Duration::from_secs(5));
     }
 
     #[tokio::test]
