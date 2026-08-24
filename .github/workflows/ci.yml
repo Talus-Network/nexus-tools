@@ -18,6 +18,7 @@ on:
           - mainnet
           - nexus-testnet-v2-0-rc-1
           - nexus-testnet
+          - testnet-v2
   pull_request:
     types: [opened, synchronize, reopened]
   push:
@@ -27,15 +28,18 @@ on:
       - 'iterate/mainnet/**'
       - 'iterate/nexus-testnet-v2-0-rc-1/**'
       - 'iterate/nexus-testnet/**'
+      - 'iterate/testnet-v2/**'
     # Tag-driven deploy. The tag prefix selects the env:
     #   testnet-*                    →  full pipeline against testnet
     #   mainnet-*                    →  full pipeline against mainnet
     #   nexus-testnet-v2-0-rc-1-*    →  full pipeline against the v2 RC env
     #   nexus-testnet-*              →  full pipeline against the long-lived
     #                                   upgradable nexus-testnet env
-    # nexus-testnet-* subsumes the rc prefixes, so in every env-resolution
-    # ternary below the rc-specific checks MUST stay above the generic
-    # nexus-testnet check — new rc tracks go above it too.
+    #   testnet-v2-*                 →  full pipeline against the testnet-v2 env
+    # Prefix subsumption: nexus-testnet-* subsumes the rc prefixes, and
+    # testnet-* subsumes testnet-v2-*. So in every env-resolution ternary
+    # below, the more specific check (rc-*, testnet-v2-*) MUST stay above the
+    # generic one (nexus-testnet, testnet) — new tracks go above accordingly.
     # Tags are immutable per the convention, so each release-style
     # promotion lands on a specific commit and the deploy run is
     # attributable to that exact ref. No merge-strategy gotchas, no
@@ -46,6 +50,7 @@ on:
       - 'mainnet-*'
       - 'nexus-testnet-v2-0-rc-1-*'
       - 'nexus-testnet-*'
+      - 'testnet-v2-*'
 
 permissions:
   contents: write
@@ -66,6 +71,7 @@ concurrency:
       (startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') || startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/')) && 'chain-nexus-testnet-v2-0-rc-1' ||
       (startsWith(github.ref_name, 'nexus-testnet-') || startsWith(github.ref_name, 'iterate/nexus-testnet/')) && 'chain-nexus-testnet' ||
       (startsWith(github.ref_name, 'mainnet-') || startsWith(github.ref_name, 'iterate/mainnet/')) && 'chain-mainnet' ||
+      (startsWith(github.ref_name, 'testnet-v2-') || startsWith(github.ref_name, 'iterate/testnet-v2/')) && 'chain-testnet-v2' ||
       (startsWith(github.ref_name, 'testnet-') || startsWith(github.ref_name, 'iterate/testnet/')) && 'chain-testnet' ||
       (github.event_name == 'workflow_dispatch' && inputs.target-env != '') && format('chain-{0}', inputs.target-env) ||
       github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) ||
@@ -128,10 +134,12 @@ jobs:
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
           (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
           (github.event_name == 'pull_request' && github.base_ref) ||
           github.ref_name
@@ -159,12 +167,14 @@ jobs:
          startsWith(github.ref_name, 'iterate/testnet/') ||
          startsWith(github.ref_name, 'iterate/mainnet/') ||
          startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') ||
-         startsWith(github.ref_name, 'iterate/nexus-testnet/')
+         startsWith(github.ref_name, 'iterate/nexus-testnet/') ||
+         startsWith(github.ref_name, 'iterate/testnet-v2/')
        )) ||
        (github.event_name == 'push' && github.ref_type == 'tag' && (
          startsWith(github.ref_name, 'testnet-') ||
          startsWith(github.ref_name, 'mainnet-') ||
-         startsWith(github.ref_name, 'nexus-testnet-')
+         startsWith(github.ref_name, 'nexus-testnet-') ||
+         startsWith(github.ref_name, 'testnet-v2-')
        )))
     uses: ./.github/workflows/offchain-tools.prepare.yml
     with:
@@ -175,10 +185,12 @@ jobs:
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
           (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
           (github.event_name == 'pull_request' && github.base_ref) ||
           github.ref_name
@@ -199,10 +211,12 @@ jobs:
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
           (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
           (github.event_name == 'pull_request' && github.base_ref) ||
           github.ref_name
