@@ -244,18 +244,23 @@ jobs:
               # from the prior static deploy
               # (tf-talus-nexus-v2 social-twitter.json:gasBudgetAmount).
               # Pre-consolidated wallet coins (above) cover this.
-              # --- #922-readiness (invocation contract; nexus#922, not yet
-              # tagged/built) -----------------------------------------------
-              # register_tool_ still mints owner_cap + cashier_admin (same
-              # names), so the cap reads below stay valid; it now ALSO
-              # auto-enables the fixed_price policy on the cashier. A tool
-              # registered at --invocation-cost 0 is fixed_price @ 0 = free,
-              # same behaviour as today. When the #922 nexus-cli / tag exists,
-              # verify against it:
+              # --- testnet-v2 CLI/contract readiness -----------------------
+              # testnet-v2 publishes a FRESH contracts generation. Base is
+              # nexus#918 (feat/test_correctness, "runtime authority"); the
+              # invocation contract (nexus#922) postdates it and folds in once
+              # the final ref is tagged. NEXUS_TAG (= contracts.tag) and the
+              # nexus-cli / leader images are all TBD until then — see
+              # tf-talus-nexus-v2 params/production/testnet-v2.
+              # On the cashier generation, register_tool_ mints owner_cap +
+              # cashier_admin (names unchanged, cap reads below stay valid);
+              # with #922 it also auto-enables the fixed_price policy, so a tool
+              # registered at --invocation-cost 0 stays free (fixed_price @ 0).
+              # When the testnet-v2 nexus-cli / tag exists, verify against it:
               #   1. `register offchain` still accepts --invocation-cost (else
               #      set the price via the policy / enable free_invocation).
-              #   2. collateral is still an auto-picked Coin<US> (the exact-lock
-              #      + refund-reserve model may change what's reserved).
+              #   2. collateral is still an auto-picked Coin<US> — testnet-v2
+              #      reuses the existing testnet US token 0x5f1861ac...; the
+              #      exact-lock/refund model may change what's reserved.
               #   3. the JSON field names read below (cashier_admin_cap_id,
               #      owner_cap_over_tool_id) still match the CLI output.
               # -------------------------------------------------------------
