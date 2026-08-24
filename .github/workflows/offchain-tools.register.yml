@@ -243,6 +243,21 @@ jobs:
               # from the prior static deploy
               # (tf-talus-nexus-v2 social-twitter.json:gasBudgetAmount).
               # Pre-consolidated wallet coins (above) cover this.
+              # --- #922-readiness (invocation contract; nexus#922, not yet
+              # tagged/built) -----------------------------------------------
+              # register_tool_ still mints owner_cap + cashier_admin (same
+              # names), so the cap reads below stay valid; it now ALSO
+              # auto-enables the fixed_price policy on the cashier. A tool
+              # registered at --invocation-cost 0 is fixed_price @ 0 = free,
+              # same behaviour as today. When the #922 nexus-cli / tag exists,
+              # verify against it:
+              #   1. `register offchain` still accepts --invocation-cost (else
+              #      set the price via the policy / enable free_invocation).
+              #   2. collateral is still an auto-picked Coin<US> (the exact-lock
+              #      + refund-reserve model may change what's reserved).
+              #   3. the JSON field names read below (cashier_admin_cap_id,
+              #      owner_cap_over_tool_id) still match the CLI output.
+              # -------------------------------------------------------------
               OUT=$(echo "$TOOL_META" \
                 | nexus tool register offchain \
                     --from-meta - \
