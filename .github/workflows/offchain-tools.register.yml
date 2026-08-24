@@ -152,6 +152,12 @@ jobs:
           # GCS prefix for registration blobs, on-chain registration namespace.
           # Falls back to SUI_NETWORK on existing testnet/mainnet envs.
           NETWORK="${{ vars.TOOLS_NAMESPACE || vars.SUI_NETWORK }}"
+          # Registration domain. Defaults to the internal ALB (*.tools.internal,
+          # VPC-only). Envs whose tools register with the PUBLIC URL set
+          # TOOLS_DOMAIN=tools.taluslabs.dev (the Cloudflare-fronted external ALB
+          # from tf-nexus-tools) so SSRF-hardened / third-party leaders can reach
+          # them. Existing internal tracks leave TOOLS_DOMAIN unset.
+          DOMAIN="${{ vars.TOOLS_DOMAIN || 'tools.internal' }}"
 
           for TOOL in $(jq -r 'keys[]' "$MANIFEST"); do
             META="${META_DIR}/${TOOL}.json"
@@ -161,7 +167,7 @@ jobs:
               exit 1
             fi
             VERSION=$(jq -r --arg t "$TOOL" '.[$t].version' "$MANIFEST")
-            TOOL_HOST="${NETWORK}-${TOOL}-v${VERSION}.tools.internal"
+            TOOL_HOST="${NETWORK}-${TOOL}-v${VERSION}.${DOMAIN}"
             echo "=== TOOL=$TOOL VERSION=$VERSION HOST=$TOOL_HOST ==="
 
             # Each tool binary's --meta emits an array of ToolMeta (one per
@@ -184,8 +190,9 @@ jobs:
               # Force a trailing slash so the join produces the right
               # endpoint, matching the legacy v0.8 static-deploy URLs.
               [ "${URL_PATH: -1}" != "/" ] && URL_PATH="${URL_PATH}/"
-              # https on implicit 443 — collie terminates TLS with the
-              # *.tools.internal leaf; its firewall admits 80/443 only.
+              # https on implicit 443. Internal ALB: collie terminates TLS with
+              # the *.tools.internal leaf (firewall admits 80/443 only). External
+              # ALB (*.tools.taluslabs.dev): Cloudflare-fronted, TLS to origin.
               TOOL_URL="https://${TOOL_HOST}${URL_PATH}"
 
               # The CLI's gas pool is a single coin picked at startup
