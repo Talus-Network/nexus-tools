@@ -20,6 +20,7 @@ jobs:
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet' && 'nexus-testnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'testnet-v2' && 'testnet-v2' ||
         'testnet'
       }}
     steps:
