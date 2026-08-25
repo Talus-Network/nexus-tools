@@ -56,6 +56,10 @@ impl NexusTool for FollowUser {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Follows an X user from the selected account."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

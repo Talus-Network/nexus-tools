@@ -44,6 +44,10 @@ impl NexusTool for RemoveMember {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Removes an X user from a List."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/lists",

@@ -56,6 +56,10 @@ impl NexusTool for SendMessageToGroupConversation {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Sends a direct message to an existing X group conversation."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

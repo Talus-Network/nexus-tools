@@ -56,6 +56,10 @@ impl NexusTool for RetweetTweet {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Reposts an X post as the selected user."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

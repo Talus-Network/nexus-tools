@@ -78,6 +78,10 @@ impl NexusTool for GetUserLists {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches the X Lists owned by a user."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

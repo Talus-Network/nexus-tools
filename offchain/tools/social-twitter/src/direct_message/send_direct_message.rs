@@ -58,6 +58,10 @@ impl NexusTool for SendDirectMessage {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Sends a direct message to an X user."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

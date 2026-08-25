@@ -90,6 +90,10 @@ impl NexusTool for GetListTweets {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches posts from an X List."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/lists",

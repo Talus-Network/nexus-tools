@@ -63,6 +63,10 @@ impl NexusTool for VerifyBlob {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Checks whether a Walrus blob is available and certified."
+    }
+
     async fn new() -> Self {
         Self
     }

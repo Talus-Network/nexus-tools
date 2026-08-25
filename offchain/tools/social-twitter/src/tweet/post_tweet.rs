@@ -87,6 +87,10 @@ impl NexusTool for PostTweet {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Publishes a post to X and returns its identifier and text."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/tweets",
