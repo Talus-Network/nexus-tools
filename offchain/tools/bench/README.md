@@ -1,29 +1,31 @@
 # `xyz.taluslabs.bench.load@1`
 
-Synthetic load tool for Nexus stress campaigns. Input ports:
+This internal tool provides deterministic load for Nexus stress campaigns. It
+is not a production tool. Its manifest prevents production deployment and
+product documentation.
 
-- `sleep_ms` — handler delay before responding (max 60 000).
-- `payload_bytes` — size of the `payload` output padding (max 61 000, kept
-  under the protocol's 61 440-byte inline-data cap so the output never hits
-  the leader's `output_serialization_error` path).
-- `error_rate` — probability in [0, 1] of returning the `err` variant.
-- `echo` — i64 passthrough to the `echo` output port, for chaining vertices
-  with real data flow.
+Input ports:
 
-The `ok` variant also carries `b0..b3` (copies of `echo`): a DAG output
-port may feed only one edge, so fanning one vertex out to w branches needs
-w ports on the same variant. Chains use `echo`; fan-out shapes use `b0..b3`.
+- `sleep_ms`: delay before the handler responds, at most 60 000 milliseconds.
+- `payload_bytes`: size of the `payload` output, at most 61 000 bytes. This is
+  below the protocol limit of 61 440 inline bytes, so a valid request does not
+  enter the leader `output_serialization_error` path.
+- `error_rate`: probability from 0.0 through 1.0 of returning the `err` variant.
+- `echo`: `i64` value copied to the `echo` output for vertex chains.
 
-The tool logs one line per request (elapsed, sleep, payload size, errored)
-because toolkit-rust exposes no Prometheus endpoint.
+The `ok` variant also copies `echo` to `b0` through `b3`. A DAG output port can
+feed one edge, so a branch needs one output port for each destination. Chains
+use `echo`; fanout shapes use `b0` through `b3`.
 
-The registered timeout is 5 s. On-chain, a walk's timeout window is the
-registered timeout plus a 5 s leader-evaluation buffer, the auto-abort band
-is (window, 2x window), and hard expiry is 2x window
-(tool_registry.move walk_timeout_ms_for_runtime_vertex; execution.move
-is_active_walk_expired) — 10 s / 20 s here, half the default-tool numbers.
-The LEADER's per-attempt HTTP wait is the same registered 5 s, retried up
-to 4 attempts, so a sleep_ms sweep has exactly two meaningful points:
-below the tool timeout (clean) and above it (every attempt times out,
-then the terminal-eval failure path). Longer sleeps change nothing the
-tool can observe.
+The tool logs elapsed time, requested delay, payload size, and error outcome
+for every request because Nexus Toolkit has no Prometheus endpoint.
+
+The registered timeout is 5 seconds. On chain, a walk timeout is the registered
+timeout plus a 5 second leader evaluation buffer. Automatic abort is available
+between one and two timeout windows, and hard expiry occurs after two windows.
+For this tool those boundaries are 10 and 20 seconds.
+
+The leader waits for the registered 5 second timeout on each of at most four
+attempts. A delay sweep therefore has two useful regions: below the tool
+timeout, where the request completes, and above it, where every attempt times
+out before terminal evaluation. Longer delays do not expose another behavior.

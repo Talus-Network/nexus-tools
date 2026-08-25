@@ -1,8 +1,8 @@
 //! # `xyz.taluslabs.bench.load@1`
 //!
-//! Synthetic load tool: sleeps `sleep_ms`, pads the output with
-//! `payload_bytes` bytes, errors with probability `error_rate`, and passes
-//! `echo` through for vertex chaining.
+//! Synthetic load tool that waits for [`Input::sleep_ms`], creates
+//! [`Input::payload_bytes`] bytes, returns [`Output::Err`] according to
+//! [`Input::error_rate`], and copies [`Input::echo`] for vertex chains.
 
 use {
     nexus_sdk::{fqn, ToolFqn},
@@ -26,7 +26,7 @@ pub(crate) struct Input {
     /// Size of the response padding in bytes.
     #[serde(default)]
     payload_bytes: u64,
-    /// Probability in [0, 1] of returning the `err` variant.
+    /// Probability from 0.0 through 1.0 of returning [`Output::Err`].
     #[serde(default)]
     error_rate: f64,
     /// Passthrough for chaining vertices with real data flow.
@@ -37,7 +37,7 @@ pub(crate) struct Input {
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Output {
-    /// Copies `echo` for chains and branches with distinct output ports.
+    /// Copies [`Input::echo`] for chains and branches with distinct output ports.
     Ok {
         echo: i64,
         payload: String,
@@ -76,7 +76,7 @@ impl NexusTool for BenchLoad {
         "Synthetic load tool: configurable delay, payload size, and error rate."
     }
 
-    /// Keeps timeout stress cases short while exercising leader retries.
+    /// Keeps [`NexusTool::timeout`] stress cases short while exercising leader retries.
     fn timeout() -> Duration {
         Duration::from_secs(5)
     }
@@ -206,14 +206,14 @@ mod tests {
         match tool.invoke(input(0, 0, 1.5, 0)).await {
             Output::Err { reason } => assert!(
                 reason.contains("not within"),
-                "expected a range-validation reason, got: {reason}"
+                "expected a range validation reason, got: {reason}"
             ),
             Output::Ok { .. } => panic!("error_rate 1.5 must be rejected"),
         }
         match tool.invoke(input(0, 0, -0.5, 0)).await {
             Output::Err { reason } => assert!(
                 reason.contains("not within"),
-                "expected a range-validation reason, got: {reason}"
+                "expected a range validation reason, got: {reason}"
             ),
             Output::Ok { .. } => panic!("error_rate -0.5 must be rejected"),
         }

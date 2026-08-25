@@ -50,6 +50,17 @@ jobs:
           # Sync README.md files from offchain/tools/*/
           for readme in offchain/tools/*/README.md; do
             tool_name=$(basename "$(dirname "$readme")")
+            manifest="$(dirname "$readme")/tools.json"
+            deploy=$(jq -r '
+              if has("deploy") then
+                if (.deploy | type) == "boolean" then .deploy
+                else error("deploy must be a boolean") end
+              else true end
+            ' "$manifest")
+            if [ "$deploy" != "true" ]; then
+              echo "Skipping internal tool documentation: $tool_name"
+              continue
+            fi
             mkdir -p "gitbook-docs/tools/$tool_name"
             cp "$readme" "gitbook-docs/tools/$tool_name/"
           done

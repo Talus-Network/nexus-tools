@@ -43,7 +43,7 @@ fn main() {
         ),
     }
 
-    // FQN version is set by CI via Docker build-arg; defaults to "1" locally.
+    // CI sets the FQN version through a Docker build argument. Local builds use "1".
     let version = env::var("TOOL_FQN_VERSION").unwrap_or_else(|_| "1".to_string());
     println!("cargo:rustc-env=TOOL_FQN_VERSION={version}");
     println!("cargo:rerun-if-env-changed=TOOL_FQN_VERSION");

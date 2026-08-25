@@ -1,6 +1,7 @@
 [package]
 name = "bench"
-description = "Synthetic load tool for Nexus stress campaigns: configurable delay, payload size, and error rate."
+description = "Internal synthetic load tool for Nexus stress campaigns."
+publish = false
 
 edition.workspace = true
 version.workspace = true
