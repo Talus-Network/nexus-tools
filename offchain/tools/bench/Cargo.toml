@@ -1,0 +1,37 @@
+[package]
+name = "bench"
+description = "Synthetic load tool for Nexus stress campaigns: configurable delay, payload size, and error rate."
+
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]
+log.workspace = true
+rand.workspace = true
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+# === Nexus deps ===
+nexus-toolkit.workspace = true
+nexus-sdk.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml = "0.8"
+
+[dev-dependencies]
+serde_json.workspace = true
+# Virtual time keeps the sleep boundary test fast.
+tokio = { workspace = true, features = ["test-util"] }

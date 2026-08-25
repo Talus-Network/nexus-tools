@@ -1,0 +1,7 @@
+{
+  "tool_name": "bench",
+  "command": "bench",
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}
