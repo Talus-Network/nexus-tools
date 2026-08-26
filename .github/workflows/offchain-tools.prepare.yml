@@ -184,12 +184,12 @@ jobs:
               FORCE_ARGS=(--force)
             elif jq -e \
               --argjson expected_fqns "$EXPECTED_FQNS" \
-              -f .github/scripts/toolkit-config-v2.jq \
+              -f .github/scripts/toolkit-config-v3.jq \
               <<<"$EXISTING_TOOLKIT_CONFIG" >/dev/null; then
-              echo "FQNs and Toolkit-v2 config unchanged — skipping keygen"
+              echo "FQNs and Toolkit config unchanged — skipping keygen"
               exit 0
             else
-              echo "Legacy or invalid Toolkit config found — forcing Toolkit-v2 keys"
+              echo "Legacy or invalid Toolkit config found — forcing new keys"
               FORCE_ARGS=(--force)
             fi
           fi
@@ -201,7 +201,7 @@ jobs:
             --entrypoint python \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json \
             -v "${{ steps.auth-gcs.outputs.credentials_file_path }}:/tmp/creds.json:ro" \
-            gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus/generate-signed-http-keys:latest \
+            gcr.io/${{ vars.GCP_INFRA_PROJECT_ID }}/nexus/generate-signed-http-keys:${{ vars.NEXUS_TAG }} \
             /app/bin/generate_signed_http_keys.py "$SECRET_NS" "$VERSIONED" \
               --fqns $FQNS \
               --project "$PROJECT" "${FORCE_ARGS[@]}"
