@@ -402,13 +402,14 @@ jobs:
               | jq -cS '.toolkit_config')
             EXPECTED_FQNS=$(jq -c '[.[].fqn] | sort' "${META_DIR}/${TOOL}.json")
 
-            # Runtime config v2 embeds only each Tool's signing key. `tool_kid`
-            # remains on-chain registration metadata and is forbidden here.
+            # Runtime config embeds only each Tool's response signing key.
+            # `tool_kid` remains on-chain registration metadata and is
+            # forbidden here.
             if ! jq -e \
               --argjson expected_fqns "$EXPECTED_FQNS" \
-              -f .github/scripts/toolkit-config-v2.jq \
+              -f .github/scripts/toolkit-config-v3.jq \
               <<<"$SKELETON" >/dev/null; then
-              echo "::error::Generated Toolkit config for $VERSIONED is not strict schema version 2"
+              echo "::error::Generated Toolkit config for $VERSIONED does not match the v3 schema"
               exit 1
             fi
 
