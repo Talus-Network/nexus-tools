@@ -38,6 +38,7 @@ jobs:
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-8' && 'nexus-testnet-v2-0-rc-8' ||
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet' && 'nexus-testnet' ||
         (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'testnet-v2' && 'testnet-v2' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet-v2' && 'mainnet-v2' ||
         'testnet'
       }}
     outputs:
