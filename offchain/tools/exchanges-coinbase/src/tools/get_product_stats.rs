@@ -75,6 +75,10 @@ impl NexusTool for GetProductStats {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches 24 hour market statistics for a Coinbase trading product."
+    }
+
     async fn new() -> Self {
         let client = CoinbaseClient::new(Some(COINBASE_EXCHANGE_API_BASE));
         Self { client }

@@ -110,6 +110,10 @@ impl NexusTool for GetTweets {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches multiple X posts by identifier."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

@@ -117,6 +117,10 @@ impl NexusTool for GetRecentTweetCount {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Counts recent X posts matching a query."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

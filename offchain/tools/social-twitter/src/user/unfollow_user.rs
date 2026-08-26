@@ -53,6 +53,10 @@ impl NexusTool for UnfollowUser {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Unfollows an X user from the selected account."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

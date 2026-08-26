@@ -59,7 +59,7 @@ impl TempDir {
             .expect("system clock should be after Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "nexus-tools-math-toolkit-v2-{}-{unique}",
+            "nexus-tools-math-toolkit-config-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir(&path).expect("temporary config directory should be created");
@@ -83,14 +83,11 @@ fn process_failure(message: &str, output: Output) -> String {
 }
 
 #[test]
-fn math_binary_accepts_workbench_toolkit_config_v2() {
+fn math_binary_accepts_workbench_toolkit_config() {
     let temp_dir = TempDir::create();
     let config_path = temp_dir.0.join("toolkit-config.json");
-    fs::write(
-        &config_path,
-        r#"{"version":2,"signed_http":{"mode":"disabled"}}"#,
-    )
-    .expect("Workbench-compatible Toolkit config should be written");
+    fs::write(&config_path, r#"{"signed_http":{"mode":"disabled"}}"#)
+        .expect("Workbench-compatible Toolkit config should be written");
 
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).expect("an available loopback port should exist");
@@ -117,7 +114,7 @@ fn math_binary_accepts_workbench_toolkit_config_v2() {
             panic!(
                 "{}",
                 process_failure(
-                    "math binary exited before accepting the Workbench Toolkit-v2 config",
+                    "math binary exited before accepting the Workbench Toolkit config",
                     output,
                 )
             );
@@ -128,7 +125,7 @@ fn math_binary_accepts_workbench_toolkit_config_v2() {
             panic!(
                 "{}",
                 process_failure(
-                    "math binary did not listen after accepting the Workbench Toolkit-v2 config",
+                    "math binary did not listen after accepting the Workbench Toolkit config",
                     output,
                 )
             );

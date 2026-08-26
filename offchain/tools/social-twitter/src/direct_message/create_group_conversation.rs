@@ -59,6 +59,10 @@ impl NexusTool for CreateGroupDmConversation {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Creates an X group conversation and sends its first direct message."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

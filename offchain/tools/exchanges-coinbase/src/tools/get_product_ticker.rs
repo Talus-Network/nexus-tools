@@ -69,6 +69,10 @@ impl NexusTool for GetProductTicker {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches the latest Coinbase ticker for a trading product."
+    }
+
     async fn new() -> Self {
         let client = CoinbaseClient::new(Some(COINBASE_EXCHANGE_API_BASE));
         Self { client }

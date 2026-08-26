@@ -92,6 +92,10 @@ impl NexusTool for ReadJson {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Reads and optionally validates JSON from a Walrus blob."
+    }
+
     async fn new() -> Self {
         Self {}
     }

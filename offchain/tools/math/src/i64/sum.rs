@@ -29,6 +29,10 @@ impl NexusTool for I64Sum {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Adds a sequence of i64 numbers and returns the result."
+    }
+
     async fn new() -> Self {
         Self
     }

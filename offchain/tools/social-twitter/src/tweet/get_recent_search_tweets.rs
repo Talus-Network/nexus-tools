@@ -202,6 +202,10 @@ impl NexusTool for GetRecentSearchTweets {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Searches recent X posts using a query."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

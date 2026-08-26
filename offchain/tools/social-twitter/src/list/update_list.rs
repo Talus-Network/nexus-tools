@@ -54,6 +54,10 @@ impl NexusTool for UpdateList {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Updates the name, description, or visibility of an X List."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/lists",

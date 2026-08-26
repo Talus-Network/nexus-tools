@@ -159,6 +159,10 @@ impl NexusTool for GetConversationMessagesById {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches direct messages from an X conversation by identifier."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

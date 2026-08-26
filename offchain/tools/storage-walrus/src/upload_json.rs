@@ -94,6 +94,10 @@ impl NexusTool for UploadJson {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Validates and uploads JSON to Walrus and returns durable blob metadata."
+    }
+
     async fn new() -> Self {
         Self {}
     }
