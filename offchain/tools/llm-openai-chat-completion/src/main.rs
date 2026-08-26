@@ -258,6 +258,10 @@ impl NexusTool for OpenaiChatCompletion {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Generates text or structured JSON with the OpenAI chat completion API."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: OPENAI_API_BASE.to_string(),

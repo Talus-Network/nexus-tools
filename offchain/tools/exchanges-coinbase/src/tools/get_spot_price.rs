@@ -77,6 +77,10 @@ impl NexusTool for GetSpotPrice {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches the current Coinbase spot price for a currency pair."
+    }
+
     async fn new() -> Self {
         let client = CoinbaseClient::new(Some(COINBASE_API_BASE));
         Self { client }

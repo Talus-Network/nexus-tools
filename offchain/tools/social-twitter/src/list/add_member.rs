@@ -44,6 +44,10 @@ impl NexusTool for AddMember {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Adds an X user to a List."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/lists",

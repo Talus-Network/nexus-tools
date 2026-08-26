@@ -68,6 +68,10 @@ impl NexusTool for GetUsersByUsername {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches multiple X users by username."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

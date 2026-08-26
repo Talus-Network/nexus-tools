@@ -53,6 +53,10 @@ impl NexusTool for UnlikeTweet {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Removes the selected user's like from an X post."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

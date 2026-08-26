@@ -88,6 +88,10 @@ impl NexusTool for UploadFile {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Uploads file bytes to Walrus and returns durable blob metadata."
+    }
+
     async fn new() -> Self {
         Self {}
     }

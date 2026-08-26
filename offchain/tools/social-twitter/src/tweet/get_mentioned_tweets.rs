@@ -131,6 +131,10 @@ impl NexusTool for GetMentionedTweets {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches X posts that mention the selected user."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/users",

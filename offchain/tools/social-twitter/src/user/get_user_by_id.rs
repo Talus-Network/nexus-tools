@@ -74,6 +74,10 @@ impl NexusTool for GetUserById {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Fetches one X user by identifier."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string() + "/users",

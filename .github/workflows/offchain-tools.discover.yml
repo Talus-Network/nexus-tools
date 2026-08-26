@@ -95,6 +95,17 @@ jobs:
             DIR=$(dirname "$TOOLS_JSON")
             TOOL_NAME=$(jq -r '.tool_name' "$TOOLS_JSON")
             COMMAND=$(jq -r '.command' "$TOOLS_JSON")
+            DEPLOY=$(jq -r '
+              if has("deploy") then
+                if (.deploy | type) == "boolean" then .deploy
+                else error("deploy must be a boolean") end
+              else true end
+            ' "$TOOLS_JSON")
+
+            if [ "$DEPLOY" != "true" ]; then
+              echo "Skipping internal tool: $TOOL_NAME"
+              continue
+            fi
 
             SKIP=false
             for blocked in "${BLOCKED_TOOLS_ARR[@]}"; do

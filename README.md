@@ -52,7 +52,7 @@ conventions the CI pipeline relies on:
    }
    ~~~
 
-   The `signed_http.enabled` value belongs to the infrastructure deployment descriptor; it is not the Toolkit runtime JSON. CI generates and validates a strict Toolkit runtime config with `"version": 2` before publishing the mounted `toolkit-config` secret.
+   The `signed_http.enabled` value belongs to the infrastructure deployment descriptor; it is not the Toolkit runtime JSON. CI validates the Toolkit runtime config before publishing the mounted `toolkit-config` secret.
 
 1. **`build.rs`** — must compile-time validate that the crate name
    matches the binary and emit `TOOL_FQN_VERSION` from the Docker

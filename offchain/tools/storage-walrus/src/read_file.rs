@@ -63,6 +63,10 @@ impl NexusTool for ReadFile {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Reads raw file bytes from a Walrus blob."
+    }
+
     async fn new() -> Self {
         Self {}
     }

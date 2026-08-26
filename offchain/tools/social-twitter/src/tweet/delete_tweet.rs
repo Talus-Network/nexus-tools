@@ -51,6 +51,10 @@ impl NexusTool for DeleteTweet {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Deletes an X post by identifier."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_API_BASE.to_string(),

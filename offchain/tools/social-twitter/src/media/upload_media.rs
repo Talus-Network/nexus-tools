@@ -125,6 +125,10 @@ impl NexusTool for UploadMedia {
     type Input = Input;
     type Output = Output;
 
+    fn description() -> &'static str {
+        "Uploads media to X and returns its media identifier."
+    }
+
     async fn new() -> Self {
         Self {
             api_base: TWITTER_X_API_BASE.to_string(),
