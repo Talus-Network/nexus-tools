@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ''
+      target-ref:
+        description: 'Env hint — resolves the deploy environment so env-scoped ALLOWLISTED_TOOLS applies'
+        required: false
+        type: string
+        default: ''
     outputs:
       matrix-all:
         description: 'JSON matrix of every discovered tool'
@@ -23,6 +28,18 @@ jobs:
   discover:
     name: Discover offchain tools
     runs-on: ubuntu-latest
+    # Resolved so the job can read env-scoped variables (ALLOWLISTED_TOOLS).
+    # Same arm ordering as the other callables: more specific prefixes above
+    # the generic ones.
+    environment: >-
+      ${{
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'mainnet' && 'mainnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-1' && 'nexus-testnet-v2-0-rc-1' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet-v2-0-rc-8' && 'nexus-testnet-v2-0-rc-8' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'nexus-testnet' && 'nexus-testnet' ||
+        (inputs.target-ref || github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'testnet-v2' && 'testnet-v2' ||
+        'testnet'
+      }}
     outputs:
       matrix-all: ${{ steps.build.outputs.matrix-all }}
       matrix-changed: ${{ steps.build.outputs.matrix-changed }}
@@ -56,6 +73,11 @@ jobs:
           # blocks can be flipped via repo settings without a PR.
           # Unset = no tools blocked.
           BLOCKED_TOOLS: ${{ vars.BLOCKED_TOOLS }}
+          # Space-separated list of tool_name values to EXCLUSIVELY
+          # include. Env-scoped variable — lets a rehearsal env (rc-8)
+          # deploy a subset (e.g. just `math`) without touching the
+          # repo-level block list or other tracks. Unset = all tools.
+          ALLOWLISTED_TOOLS: ${{ vars.ALLOWLISTED_TOOLS }}
         run: |
           set -euo pipefail
           ALL='[]'
@@ -90,6 +112,12 @@ jobs:
           read -ra BLOCKED_TOOLS_ARR <<< "${BLOCKED_TOOLS:-}"
           echo "Blocked tools: ${BLOCKED_TOOLS_ARR[*]:-<none>}"
 
+          # Env-scoped allowlist: when set, ONLY these tools survive
+          # discovery (block list still applies on top). Used by the
+          # rc-8 rehearsal env to deploy math only.
+          read -ra ALLOWLISTED_TOOLS_ARR <<< "${ALLOWLISTED_TOOLS:-}"
+          echo "Allowlisted tools: ${ALLOWLISTED_TOOLS_ARR[*]:-<all>}"
+
           for TOOLS_JSON in offchain/tools/*/tools.json; do
             [ -f "$TOOLS_JSON" ] || continue
             DIR=$(dirname "$TOOLS_JSON")
@@ -105,6 +133,20 @@ jobs:
               fi
             done
             [ "$SKIP" = "true" ] && continue
+
+            if [ "${#ALLOWLISTED_TOOLS_ARR[@]}" -gt 0 ]; then
+              IN_ALLOWLIST=false
+              for allowed in "${ALLOWLISTED_TOOLS_ARR[@]}"; do
+                if [ "$TOOL_NAME" = "$allowed" ]; then
+                  IN_ALLOWLIST=true
+                  break
+                fi
+              done
+              if [ "$IN_ALLOWLIST" = "false" ]; then
+                echo "Skipping non-allowlisted tool: $TOOL_NAME (env ALLOWLISTED_TOOLS is set)"
+                continue
+              fi
+            fi
 
             TREE_HASH=$(git rev-parse "HEAD:${DIR}/")
             CONTENT_HASH=$(printf '%s' "$TREE_HASH" | sha256sum | cut -d' ' -f1)

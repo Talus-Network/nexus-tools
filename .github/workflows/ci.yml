@@ -17,6 +17,7 @@ on:
           - testnet
           - mainnet
           - nexus-testnet-v2-0-rc-1
+          - nexus-testnet-v2-0-rc-8
           - nexus-testnet
           - testnet-v2
   pull_request:
@@ -27,12 +28,15 @@ on:
       - 'iterate/testnet/**'
       - 'iterate/mainnet/**'
       - 'iterate/nexus-testnet-v2-0-rc-1/**'
+      - 'iterate/nexus-testnet-v2-0-rc-8/**'
       - 'iterate/nexus-testnet/**'
       - 'iterate/testnet-v2/**'
     # Tag-driven deploy. The tag prefix selects the env:
     #   testnet-*                    →  full pipeline against testnet
     #   mainnet-*                    →  full pipeline against mainnet
     #   nexus-testnet-v2-0-rc-1-*    →  full pipeline against the v2 RC env
+    #   nexus-testnet-v2-0-rc-8-*    →  full pipeline against the rc-8
+    #                                   rehearsal env (math-only allowlist)
     #   nexus-testnet-*              →  full pipeline against the long-lived
     #                                   upgradable nexus-testnet env
     #   testnet-v2-*                 →  full pipeline against the testnet-v2 env
@@ -69,6 +73,7 @@ concurrency:
   group: >-
     ${{
       (startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') || startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/')) && 'chain-nexus-testnet-v2-0-rc-1' ||
+      (startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-8-') || startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/')) && 'chain-nexus-testnet-v2-0-rc-8' ||
       (startsWith(github.ref_name, 'nexus-testnet-') || startsWith(github.ref_name, 'iterate/nexus-testnet/')) && 'chain-nexus-testnet' ||
       (startsWith(github.ref_name, 'mainnet-') || startsWith(github.ref_name, 'iterate/mainnet/')) && 'chain-mainnet' ||
       (startsWith(github.ref_name, 'testnet-v2-') || startsWith(github.ref_name, 'iterate/testnet-v2/')) && 'chain-testnet-v2' ||
@@ -103,10 +108,34 @@ jobs:
           echo "head-sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
   # ── Discover tools (always) ──────────────────────────────────
+  # target-ref lets discover resolve the deploy env and honor its
+  # env-scoped ALLOWLISTED_TOOLS variable (rc-8 rehearsal deploys math
+  # only). Same ternary as deploy's, minus the resolve-target arm —
+  # discover runs before/parallel to it, and PR#-dispatch runs fall back
+  # to the default env (no allowlist → full matrix), which matches the
+  # pre-allowlist behavior.
   discover:
     uses: ./.github/workflows/offchain-tools.discover.yml
     with:
       base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+      target-ref: >-
+        ${{
+          inputs.target-env ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-8-') && 'nexus-testnet-v2-0-rc-8') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/') && 'nexus-testnet-v2-0-rc-8') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
+          (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
+          (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
+          (startsWith(github.ref_name, 'iterate/testnet/') && 'testnet') ||
+          (github.event_name == 'pull_request' && github.base_ref) ||
+          github.ref_name
+        }}
 
   # target-ref passed to callables. The callables' `environment:` expression
   # treats this string as the env hint: it resolves to 'mainnet' when this
@@ -132,11 +161,13 @@ jobs:
           needs.resolve-target.outputs.base-ref ||
           inputs.target-env ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-8-') && 'nexus-testnet-v2-0-rc-8') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/') && 'nexus-testnet-v2-0-rc-8') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
           (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
@@ -167,6 +198,7 @@ jobs:
          startsWith(github.ref_name, 'iterate/testnet/') ||
          startsWith(github.ref_name, 'iterate/mainnet/') ||
          startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') ||
+         startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/') ||
          startsWith(github.ref_name, 'iterate/nexus-testnet/') ||
          startsWith(github.ref_name, 'iterate/testnet-v2/')
        )) ||
@@ -183,11 +215,13 @@ jobs:
           needs.resolve-target.outputs.base-ref ||
           inputs.target-env ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-8-') && 'nexus-testnet-v2-0-rc-8') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/') && 'nexus-testnet-v2-0-rc-8') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
           (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
@@ -209,11 +243,13 @@ jobs:
           needs.resolve-target.outputs.base-ref ||
           inputs.target-env ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-1-') && 'nexus-testnet-v2-0-rc-1') ||
+          (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-v2-0-rc-8-') && 'nexus-testnet-v2-0-rc-8') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'nexus-testnet-') && 'nexus-testnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'mainnet-') && 'mainnet') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-v2-') && 'testnet-v2') ||
           (github.ref_type == 'tag' && startsWith(github.ref_name, 'testnet-') && 'testnet') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-1/') && 'nexus-testnet-v2-0-rc-1') ||
+          (startsWith(github.ref_name, 'iterate/nexus-testnet-v2-0-rc-8/') && 'nexus-testnet-v2-0-rc-8') ||
           (startsWith(github.ref_name, 'iterate/nexus-testnet/') && 'nexus-testnet') ||
           (startsWith(github.ref_name, 'iterate/mainnet/') && 'mainnet') ||
           (startsWith(github.ref_name, 'iterate/testnet-v2/') && 'testnet-v2') ||
@@ -259,14 +295,21 @@ jobs:
       # `gh run watch` would also fetch check annotations (checks:read),
       # which fine-grained PATs cannot carry. ava-game uses the same
       # action for the same reason.
-      - name: Dispatch tf-nexus-tools terraform apply and wait
-        uses: the-actions-org/workflow-dispatch@v4.0.0
-        with:
-          repo: Talus-Network/tf-nexus-tools
-          ref: production
-          workflow: Terraform
-          token: ${{ secrets.GH_ACCESS_TOKEN }}
-          inputs: '{}'
+      #
+      # rc-8 rehearsal: dispatch DISABLED on this branch. The terraform
+      # apply is run manually after the register output has been
+      # verified. Re-enable by uncommenting before promoting this wiring
+      # to a long-lived track.
+      # - name: Dispatch tf-nexus-tools terraform apply and wait
+      #   uses: the-actions-org/workflow-dispatch@v4.0.0
+      #   with:
+      #     repo: Talus-Network/tf-nexus-tools
+      #     ref: production
+      #     workflow: Terraform
+      #     token: ${{ secrets.GH_ACCESS_TOKEN }}
+      #     inputs: '{}'
+      - name: Terraform apply skipped (manual for rc-8 rehearsal)
+        run: echo "tf-nexus-tools apply NOT dispatched — run it manually after verifying register output."
 
   # ── ci-gate: single required status check for branch protection ──
   ci-gate:
