@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "bench"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "log",
  "nexus-sdk",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "exchanges-coinbase"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "mockito",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "backon",
  "base64 0.22.1",
@@ -1986,7 +1986,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-openai-chat-completion"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2038,7 +2038,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "math"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "nexus-sdk",
  "nexus-toolkit",
@@ -2063,7 +2063,7 @@ checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
 
 [[package]]
 name = "memory-memwal"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -2191,8 +2191,8 @@ dependencies = [
 
 [[package]]
 name = "nexus-sdk"
-version = "2.0.0-rc.final"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v2.0.0-rc.final#4211b60a77943f2e763b68fe7b3371caf961081c"
+version = "2.0.0"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v2.0.0#e8076bc5672ef505ab14c7acd9e9353a5f67bdd2"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -2215,13 +2215,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sui-crypto",
- "sui-move",
- "sui-move-call",
- "sui-move-codegen",
- "sui-move-ptb",
  "sui-rpc",
  "sui-sdk-types",
  "sui-transaction-builder",
+ "talus-sui-move",
+ "talus-sui-move-call",
+ "talus-sui-move-codegen",
+ "talus-sui-move-ptb",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -2232,8 +2232,8 @@ dependencies = [
 
 [[package]]
 name = "nexus-toolkit"
-version = "2.0.0-rc.final"
-source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v2.0.0-rc.final#4211b60a77943f2e763b68fe7b3371caf961081c"
+version = "2.0.0"
+source = "git+https://github.com/Talus-Network/nexus-sdk?tag=v2.0.0#e8076bc5672ef505ab14c7acd9e9353a5f67bdd2"
 dependencies = [
  "anyhow",
  "bcs",
@@ -3617,7 +3617,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "social-twitter"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "base64 0.13.1",
  "chrono",
@@ -3705,68 +3705,6 @@ dependencies = [
  "rand_core 0.6.4",
  "signature",
  "sui-sdk-types",
-]
-
-[[package]]
-name = "sui-move"
-version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
-dependencies = [
- "bcs",
- "ethnum",
- "serde",
- "sui-move-derive",
- "sui-sdk-types",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sui-move-call"
-version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
-dependencies = [
- "bcs",
- "serde",
- "sui-move",
- "sui-sdk-types",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sui-move-codegen"
-version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "sui-rpc",
- "sui-sdk-types",
- "syn",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sui-move-derive"
-version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "sui-move-ptb"
-version = "0.1.0"
-source = "git+https://github.com/Talus-Network/move-binding?rev=2d42967137b760b8b133625565255e12f5022cc1#2d42967137b760b8b133625565255e12f5022cc1"
-dependencies = [
- "sui-move",
- "sui-move-call",
- "sui-sdk-types",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3885,6 +3823,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "talus-sui-move"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca2536f4b0809fda4d671fe4e5474bb344c6c057a6f24662eef70128f7aac78b"
+dependencies = [
+ "bcs",
+ "ethnum",
+ "serde",
+ "sui-sdk-types",
+ "talus-sui-move-derive",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "talus-sui-move-call"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e8757d1ce55b68a5174434c835a2f2dc785000997fb1305dbe947879927bf71"
+dependencies = [
+ "bcs",
+ "serde",
+ "sui-sdk-types",
+ "talus-sui-move",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "talus-sui-move-codegen"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ed1aeafc6d00044c3ab7efa91363b96078977d0d727e498aa72cacc434da987"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "sui-rpc",
+ "sui-sdk-types",
+ "syn",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "talus-sui-move-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68e5b334bf4da6c44903f211ae0958287735e04e05c501b82606799b8af482cc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "talus-sui-move-ptb"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2758aa9b9e5a0940aa7493c8190235daa4335090328771aea05d8d2f85fba512"
+dependencies = [
+ "sui-sdk-types",
+ "talus-sui-move",
+ "talus-sui-move-call",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3897,7 +3902,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3905,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "templating-jinja"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "minijinja",
  "nexus-sdk",
@@ -4403,7 +4408,7 @@ dependencies = [
 
 [[package]]
 name = "walrus"
-version = "2.0.0-rc.final"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "jsonschema",
