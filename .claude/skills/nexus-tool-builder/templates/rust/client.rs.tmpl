@@ -1,0 +1,319 @@
+//! {{ServicePascal}} API client.
+//!
+//! Wraps `reqwest::Client` with `.get<T>` / `.post<T>` / `.post_form<T>`
+//! helpers that return a typed `{{ServicePascal}}ErrorResponse` on failure.
+//!
+//! ## Credential model
+//!
+//! **Upstream credentials come from the process environment, NOT from
+//! tool inputs.** Tool inputs flow through the Nexus DAG on Sui as
+//! plaintext — anything you put on `Input` is effectively published.
+//!
+//! - `{{SERVICE_UPPER}}_API_KEY` is read once at startup by
+//!   [`from_env`] and wrapped in [`zeroize::Zeroizing<String>`] so heap
+//!   buffers are wiped on drop.
+//! - The struct hand-implements `Debug` to print `<redacted>` for the
+//!   bearer — never `#[derive(Debug)]`.
+//! - The bearer is set once at construction; there is no per-request
+//!   `.with_auth(...)` builder. Each `NexusTool::new()` call constructs a
+//!   fresh `Client` via `from_env()`; cloning is cheap (Arc).
+//!
+//! Canonical reference: `offchain/tools/memory-memwal/src/client.rs`.
+//!
+//! Auth model selected for this crate: {{auth_model}}.
+
+use {
+    crate::{
+        error::{ {{ServicePascal}}ErrorKind, {{ServicePascal}}ErrorResponse },
+        tools::{{SERVICE_UPPER}}_API_BASE,
+    },
+    reqwest::{Client, RequestBuilder},
+    serde::{de::DeserializeOwned, Serialize},
+    std::sync::{Arc, Once, OnceLock},
+    zeroize::Zeroizing,
+};
+
+/// Env var holding the upstream API credential. Set per Cloud Run service
+/// via Secret Manager `secretKeyRef` (operator-configured, NOT in
+/// `tools.json`).
+pub(crate) const ENV_API_KEY: &str = "{{SERVICE_UPPER}}_API_KEY";
+
+/// One-shot guard so the "missing key" warning fires once even though
+/// `from_env` runs once per registered tool.
+static WARN_MISSING_KEY: Once = Once::new();
+
+/// Process-wide HTTP client shared across every `{{ServicePascal}}Client`
+/// so the connection pool, TLS session cache, and HTTP/2 multiplexing
+/// survive across `invoke` calls. `reqwest::Client` clone is a cheap Arc bump.
+static SHARED_HTTP: OnceLock<Client> = OnceLock::new();
+
+fn shared_http() -> Client {
+    SHARED_HTTP
+        .get_or_init(|| {
+            Client::builder()
+                .user_agent("nexus-sdk-{{crate_name}}/1.0")
+                .build()
+                .expect("Failed to create HTTP client")
+        })
+        .clone()
+}
+
+/// Load `<cwd>/.env` if present. Cwd-only (no parent walk) so a planted
+/// `.env` above the binary's cwd cannot influence the process. Existing
+/// exports always win. MUST be called before the tokio runtime is built —
+/// `set_var` is unsound from a multi-threaded process.
+pub(crate) fn load_dotenv_if_present() {
+    let candidate = match std::env::current_dir() {
+        Ok(d) => d.join(".env"),
+        Err(e) => {
+            log::warn!("could not read cwd while looking for .env: {e}");
+            return;
+        }
+    };
+    if !candidate.is_file() {
+        return;
+    }
+    match dotenvy::from_path(&candidate) {
+        Ok(()) => log::info!("loaded env vars from {}", candidate.display()),
+        Err(e) => log::warn!("failed to load {}: {e}", candidate.display()),
+    }
+}
+
+/// Classification of the API-key env var. Hand-written `Debug` redacts the
+/// secret — never `derive` Debug on this type.
+enum KeyValidation {
+    Ok(Zeroizing<String>),
+    Missing,
+    Invalid(String),
+}
+
+impl std::fmt::Debug for KeyValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok(_) => write!(f, "Ok(<redacted>)"),
+            Self::Missing => write!(f, "Missing"),
+            Self::Invalid(reason) => f.debug_tuple("Invalid").field(reason).finish(),
+        }
+    }
+}
+
+/// Pure classifier — no I/O, no exits, deterministic.
+fn classify_key(value: Option<&str>) -> KeyValidation {
+    let raw = match value {
+        Some(s) if !s.is_empty() => s,
+        _ => return KeyValidation::Missing,
+    };
+    // {{ServicePascal}}-specific shape check. Tighten per upstream's key format.
+    // Example for Stripe: must start with `sk_test_` or `sk_live_`.
+    if raw.len() < 16 {
+        return KeyValidation::Invalid(format!(
+            "is set but is too short ({} chars). Expected ≥16-character API key.",
+            raw.len()
+        ));
+    }
+    KeyValidation::Ok(Zeroizing::new(raw.to_string()))
+}
+
+/// Eager startup-time key validation. Without this, a malformed key would
+/// only surface on the first `/invoke`. Called from `main`.
+pub(crate) fn validate_credentials_at_startup() -> Result<(), String> {
+    read_validated_api_key().map(|_| ())
+}
+
+fn read_validated_api_key() -> Result<Option<Zeroizing<String>>, String> {
+    let raw = std::env::var(ENV_API_KEY).ok().map(Zeroizing::new);
+    match classify_key(raw.as_deref().map(|z| z.as_str())) {
+        KeyValidation::Ok(k) => Ok(Some(k)),
+        KeyValidation::Missing => {
+            WARN_MISSING_KEY.call_once(|| {
+                log::warn!(
+                    "{ENV_API_KEY} is not set — every invoke will fail \
+                     authentication upstream until this env var is exported."
+                );
+            });
+            Ok(None)
+        }
+        KeyValidation::Invalid(reason) => Err(reason),
+    }
+}
+
+#[derive(Clone)]
+pub struct {{ServicePascal}}Client {
+    client: Arc<Client>,
+    base_url: String,
+    /// API credential read once at startup from `ENV_API_KEY`. Wrapped in
+    /// `Zeroizing` so heap buffers are wiped on drop. `None` if the env
+    /// var was missing or malformed — `invoke()` calls will fail upstream
+    /// with the bare 401, which is the right signal to the operator.
+    bearer: Option<Zeroizing<String>>,
+    /// Per-request idempotency key (Stripe-style writes). Set via
+    /// `.with_idempotency(...)` on the cheap-cloned client.
+    idempotency_key: Option<String>,
+}
+
+// Hand-written Debug — NEVER derive on a type holding a credential.
+impl std::fmt::Debug for {{ServicePascal}}Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("{{ServicePascal}}Client")
+            .field("base_url", &self.base_url)
+            .field("bearer", &if self.bearer.is_some() { "<redacted>" } else { "<none>" })
+            .field("idempotency_key", &self.idempotency_key)
+            .finish()
+    }
+}
+
+impl {{ServicePascal}}Client {
+    /// Production constructor: reads `ENV_API_KEY` from the process env
+    /// and wraps it in `Zeroizing`. A missing/malformed key logs but does
+    /// not error here — `main`'s startup validation is the fail-fast site.
+    pub fn from_env() -> Result<Self, String> {
+        let bearer = match read_validated_api_key() {
+            Ok(Some(k)) => Some(k),
+            Ok(None) => None,
+            Err(reason) => {
+                log::error!("{ENV_API_KEY} {reason}");
+                None
+            }
+        };
+        Ok(Self {
+            client: Arc::new(shared_http()),
+            base_url: {{SERVICE_UPPER}}_API_BASE.to_string(),
+            bearer,
+            idempotency_key: None,
+        })
+    }
+
+    /// Test-only constructor. Accepts a base URL (HTTP loopback for
+    /// mockito) and a bearer string directly, bypassing env validation.
+    #[cfg(test)]
+    pub fn for_testing(base_url: &str, bearer: &str) -> Self {
+        Self {
+            client: Arc::new(Client::builder()
+                .user_agent("nexus-sdk-{{crate_name}}/1.0")
+                .build()
+                .expect("failed to build test HTTP client")),
+            base_url: base_url.to_string(),
+            bearer: Some(Zeroizing::new(bearer.to_string())),
+            idempotency_key: None,
+        }
+    }
+
+    /// Attach an `Idempotency-Key` header for the next request. Required
+    /// by Stripe-style APIs on writes; harmless on others.
+    #[must_use]
+    pub fn with_idempotency(mut self, key: &str) -> Self {
+        self.idempotency_key = Some(key.to_string());
+        self
+    }
+
+    /// GET — JSON response.
+    pub async fn get<T>(&self, endpoint: &str) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.get(&url));
+        self.send(req).await
+    }
+
+    /// POST with a JSON body.
+    pub async fn post<T, B>(&self, endpoint: &str, body: &B) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.post(&url).json(body));
+        self.send(req).await
+    }
+
+    /// POST with a form-encoded body (Stripe / OAuth-style APIs).
+    pub async fn post_form<T, B>(&self, endpoint: &str, body: &B) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.post(&url).form(body));
+        self.send(req).await
+    }
+
+    /// DELETE.
+    pub async fn delete<T>(&self, endpoint: &str) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url(endpoint);
+        let req = self.apply_headers(self.client.delete(&url));
+        self.send(req).await
+    }
+
+    fn url(&self, endpoint: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), endpoint.trim_start_matches('/'))
+    }
+
+    fn apply_headers(&self, mut req: RequestBuilder) -> RequestBuilder {
+        if let Some(ref bearer) = self.bearer {
+            req = req.bearer_auth(bearer.as_str());
+        }
+        if let Some(ref key) = self.idempotency_key {
+            req = req.header("Idempotency-Key", key);
+        }
+        req
+    }
+
+    async fn send<T>(&self, req: RequestBuilder) -> Result<T, {{ServicePascal}}ErrorResponse>
+    where
+        T: DeserializeOwned,
+    {
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err({{ServicePascal}}ErrorResponse {
+                    reason: format!("Network error: {}", e),
+                    kind: {{ServicePascal}}ErrorKind::from_network_error(&e),
+                    status_code: Some(0),
+                })
+            }
+        };
+
+        let status = response.status();
+        let text = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                return Err({{ServicePascal}}ErrorResponse {
+                    reason: format!("Failed to read response: {}", e),
+                    kind: {{ServicePascal}}ErrorKind::Parse,
+                    status_code: None,
+                })
+            }
+        };
+
+        if !status.is_success() {
+            // Try to extract a structured error per the API's envelope.
+            // The error.rs template provides a try_parse_api_error helper.
+            if let Some(parsed) = crate::error::try_parse_api_error(&text, status.as_u16()) {
+                return Err(parsed);
+            }
+            return Err({{ServicePascal}}ErrorResponse {
+                reason: format!("API error ({}): {}", status, truncate(&text, 512)),
+                kind: {{ServicePascal}}ErrorKind::from_status_code(status.as_u16()),
+                status_code: Some(status.as_u16()),
+            });
+        }
+
+        serde_json::from_str::<T>(&text).map_err(|e| {{ServicePascal}}ErrorResponse {
+            reason: format!("Failed to parse JSON: {}", e),
+            kind: {{ServicePascal}}ErrorKind::Parse,
+            status_code: None,
+        })
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
+    }
+}

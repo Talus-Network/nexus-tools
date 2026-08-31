@@ -1,0 +1,202 @@
+//! # `{{fqn}}`
+//!
+//! {{endpoint_description}}
+//!
+//! ## Credential contract
+//!
+//! Upstream credentials come from the process environment
+//! (`{{SERVICE_UPPER}}_API_KEY`), read once at startup by
+//! `{{ServicePascal}}Client::from_env`. They are NEVER fields on `Input`
+//! — tool inputs flow through the Nexus DAG on Sui as plaintext, so any
+//! credential-shaped Input field is effectively published on-chain.
+//!
+//! ## Statelessness contract
+//!
+//! Per the `nexus-toolkit` contract, `new()` is called on every request.
+//! This tool MUST be stateless w.r.t. request data:
+//!
+//! - No mutable per-request state in `static` / `lazy_static` /
+//!   `Mutex` / `RwLock` / `Cell` / `RefCell`.
+//! - No on-disk writes outside `#[cfg(test)]`.
+//! - The struct's only field is a cheap-to-clone `{{ServicePascal}}Client`
+//!   (shared HTTP pool + Arc-wrapped bearer). Same input ⇒ identical
+//!   upstream call.
+
+use {
+    crate::{
+        {{service_snake}}_client::{{ServicePascal}}Client,
+        error::{{ServicePascal}}ErrorKind,
+    },
+    nexus_sdk::{fqn, ToolFqn},
+    nexus_toolkit::*,
+    schemars::JsonSchema,
+    serde::{Deserialize, Serialize},
+};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Input {
+    // **NO credential-shaped fields.** Do not add `api_key`, `bearer`,
+    // `secret`, `token`, `password`, `private_key`, `access_token`,
+    // `consumer_secret`, or `client_secret`. The auditor's C1 check
+    // refuses to mark the tool ready if it finds one. Credentials come
+    // from `{{SERVICE_UPPER}}_API_KEY` env var.
+    {{#if is_write}}
+    /// Optional `Idempotency-Key` header. Generate a UUID per logical
+    /// retry-bucket in your DAG; reusing the same key returns the same
+    /// upstream response without double-charging. This is NOT a credential
+    /// — it's per-call dedup data.
+    pub idempotency_key: Option<String>,
+
+    {{/if}}
+    // TODO: replace with the real input ports.
+    //
+    // Style rules:
+    //   - snake_case
+    //   - optional fields use Option<T>
+    //   - split paired fields (prompt + context) into separate ports
+    //   - Debug is fine to derive — there are no credentials in Input
+    /// {{example_input_doc}}
+    pub {{example_input_name}}: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Output {
+    Ok {
+        // TODO: flat output ports. Crucial fields must NOT be Option<T>.
+        /// {{example_output_doc}}
+        {{example_output_name}}: String,
+    },
+    Err {
+        reason: String,
+        kind: {{ServicePascal}}ErrorKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status_code: Option<u16>,
+    },
+}
+
+/// Stateless: holds only a cheap-to-clone `{{ServicePascal}}Client`.
+/// `new()` constructs from env every request; the shared HTTP pool and
+/// startup-validated bearer are cached.
+pub(crate) struct {{EndpointPascal}} {
+    client: {{ServicePascal}}Client,
+}
+
+impl NexusTool for {{EndpointPascal}} {
+    type Input = Input;
+    type Output = Output;
+
+    async fn new() -> Self {
+        Self {
+            client: {{ServicePascal}}Client::from_env().unwrap_or_else(|e| {
+                log::error!("{{crate_name}} configuration invalid: {e}");
+                panic!("{{crate_name}} configuration invalid: {e}");
+            }),
+        }
+    }
+
+    fn fqn() -> ToolFqn {
+        // CI bumps TOOL_FQN_VERSION on every source change (subtree git hash).
+        fqn!(concat!("{{fqn_no_version}}@", env!("TOOL_FQN_VERSION")))
+    }
+
+    fn path() -> &'static str {
+        "{{path}}"
+    }
+
+    fn description() -> &'static str {
+        "{{endpoint_description}}"
+    }
+
+    async fn health(&self) -> AnyResult<StatusCode> {
+        Ok(StatusCode::OK)
+    }
+
+    async fn invoke(&self, input: Self::Input) -> Self::Output {
+        // Client is already authed from startup env var. Cheap clone for
+        // per-request mutations (idempotency key).
+        {{#if is_write}}
+        let client = match input.idempotency_key {
+            Some(ref k) => self.client.clone().with_idempotency(k),
+            None => self.client.clone(),
+        };
+        {{else}}
+        let client = &self.client;
+        {{/if}}
+
+        let endpoint = format!("{{endpoint_path_template}}", input.{{example_input_name}});
+
+        match client.get::<serde_json::Value>(&endpoint).await {
+            Ok(_value) => Output::Ok {
+                {{example_output_name}}: "TODO: map response field".to_string(),
+            },
+            Err(e) => Output::Err {
+                reason: e.reason,
+                kind: e.kind,
+                status_code: e.status_code,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        ::{mockito::Server, serde_json::json},
+    };
+
+    async fn create_server_and_tool() -> (mockito::ServerGuard, {{EndpointPascal}}) {
+        let server = Server::new_async().await;
+        // Bypass env-var validation: inject a test bearer directly.
+        let client = {{ServicePascal}}Client::for_testing(&server.url(), "sk_test_FAKE_FOR_TESTS_ONLY");
+        let tool = {{EndpointPascal}} { client };
+        (server, tool)
+    }
+
+    fn test_input({{example_input_name}}: &str) -> Input {
+        Input {
+            {{#if is_write}}
+            idempotency_key: None,
+            {{/if}}
+            {{example_input_name}}: {{example_input_name}}.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_success() {
+        let (mut server, tool) = create_server_and_tool().await;
+
+        let mock = server
+            .mock("GET", "{{mock_path}}")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "{{example_output_name}}": "value" }).to_string())
+            .create_async()
+            .await;
+
+        let result = tool.invoke(test_input("test")).await;
+        match result {
+            Output::Ok { .. } => { /* assert specific fields */ }
+            Output::Err { reason, .. } => panic!("Expected Ok, got Err: {}", reason),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_api_error() {
+        let (mut server, tool) = create_server_and_tool().await;
+
+        let _mock = server
+            .mock("GET", "{{mock_path}}")
+            .with_status(404)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "error": { "type": "invalid_request_error", "message": "not found" } }).to_string())
+            .create_async()
+            .await;
+
+        let result = tool.invoke(test_input("test")).await;
+        assert!(matches!(result, Output::Err { kind: {{ServicePascal}}ErrorKind::InvalidRequest, .. }));
+    }
+}

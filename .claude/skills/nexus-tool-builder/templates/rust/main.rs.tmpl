@@ -1,0 +1,45 @@
+#![doc = include_str!("../README.md")]
+#![allow(clippy::large_enum_variant)]
+
+use nexus_toolkit::bootstrap;
+
+mod {{service_snake}}_client;
+mod error;
+mod tools;
+
+fn main() {
+    // Install env_logger before anything else so dotenv/credential paths
+    // emit through `log::*`; `bootstrap!`'s own `try_init()` becomes a no-op.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
+    // `--meta` is an introspection mode that emits the tool's FQN/URL/
+    // schema list without standing up the runtime. CI's prepare step
+    // invokes it from a fresh image with no env, so it must not require
+    // runtime credentials. `nexus_toolkit::bootstrap!` handles --meta
+    // and exits before any HTTP call is made.
+    let meta_only = std::env::args().any(|a| a == "--meta");
+
+    if !meta_only {
+        // dotenv + credential validation run single-threaded — `set_var`
+        // is unsound from a multi-threaded process. `main` is the only
+        // exit site.
+        {{service_snake}}_client::load_dotenv_if_present();
+        if let Err(reason) = {{service_snake}}_client::validate_credentials_at_startup() {
+            log::error!("{} {reason}", {{service_snake}}_client::ENV_API_KEY);
+            std::process::exit(1);
+        }
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(async {
+            bootstrap!([
+                // Add one entry per endpoint, e.g.:
+                // tools::{{endpoint_snake}}::{{EndpointPascal}},
+            ]);
+        });
+}

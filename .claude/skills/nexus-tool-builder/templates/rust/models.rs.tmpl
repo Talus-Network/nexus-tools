@@ -1,0 +1,21 @@
+//! Shared {{ServicePascal}} response models used by two or more endpoints.
+
+use {
+    schemars::JsonSchema,
+    serde::{Deserialize, Serialize},
+};
+
+/// Generic envelope shape — adapt to the upstream API's actual response.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct {{ServicePascal}}ApiResponse<T> {
+    pub data: Option<T>,
+    pub errors: Option<Vec<{{ServicePascal}}ApiErrorItem>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct {{ServicePascal}}ApiErrorItem {
+    #[serde(rename = "message")]
+    pub message: Option<String>,
+    #[serde(rename = "type")]
+    pub error_type: Option<String>,
+}

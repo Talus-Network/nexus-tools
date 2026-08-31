@@ -1,0 +1,28 @@
+# {{ServicePascal}} tools for Nexus
+
+This crate exposes {{ServicePascal}} API endpoints as Nexus Tools.
+API reference: [{{api_docs_url}}]({{api_docs_url}}).
+
+---
+
+# `{{fqn}}`
+
+{{endpoint_description}}
+
+## Input
+
+**`{{example_input_name}}`: [`String`]** — {{example_input_doc}}.
+
+## Output Variants & Ports
+
+**`ok`** — The request succeeded.
+
+- **`ok.{{example_output_name}}`: [`String`]** — {{example_output_doc}}.
+
+**`err`** — The request failed.
+
+- **`err.reason`: [`String`]** — A detailed error message.
+- **`err.kind`: [`String`]** — Type of error (invalid_request, not_found, parse, etc.).
+- **`err.status_code`: [`u16`] (optional)** — HTTP status code if available.
+
+<!-- Repeat one section per endpoint, separated by `---`. -->
