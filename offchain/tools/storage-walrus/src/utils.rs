@@ -16,7 +16,7 @@
 
 pub mod validation {
     use {
-        nexus_toolkit::network::is_public_ip,
+        nexus_toolkit::network::{is_public_ip, validate_public_url},
         reqwest::Url,
         serde::{de, Deserialize, Deserializer},
         std::{
@@ -28,10 +28,6 @@ pub mod validation {
 
     /// Unset (the default) refuses local-path uploads entirely.
     const ENV_UPLOAD_ROOT: &str = "WALRUS_UPLOAD_ROOT";
-
-    /// `.internal` is where the GCE metadata server lives.
-    const PRIVATE_DOMAIN_SUFFIXES: &[&str] =
-        &[".internal", ".local", ".localhost", ".home.arpa", ".arpa"];
 
     /// Keeps a caller from parking a request on an unresponsive resolver for the
     /// whole tool timeout.
@@ -96,53 +92,7 @@ pub mod validation {
             ));
         }
 
-        let Some(host) = url.host_str() else {
-            return Err(EndpointError("endpoint must have a host".to_string()));
-        };
-        check_endpoint_host(host)
-    }
-
-    /// The hosts that can be refused without resolving them.
-    ///
-    /// The single-label rule is the non-obvious one: a bare `metadata` resolves
-    /// through the container's DNS search list, which on GCE ends at
-    /// `google.internal`, so a name with no dot in it reaches the metadata
-    /// server.
-    fn check_endpoint_host(host: &str) -> Result<(), EndpointError> {
-        if let Some(ip) = host_as_ip(host) {
-            return if is_public_ip(ip) {
-                Ok(())
-            } else {
-                Err(EndpointError(format!(
-                    "endpoint address `{ip}` is not a public address"
-                )))
-            };
-        }
-
-        // The root label is significant to `Url` but not to the resolver, so
-        // `metadata.google.internal.` has to be read as `metadata.google.internal`.
-        let host = host.to_ascii_lowercase();
-        let host = host.strip_suffix('.').unwrap_or(&host);
-        if host == "localhost" {
-            return Err(EndpointError(
-                "endpoint host `localhost` is not a public host".to_string(),
-            ));
-        }
-        if let Some(suffix) = PRIVATE_DOMAIN_SUFFIXES
-            .iter()
-            .find(|suffix| host.ends_with(*suffix))
-        {
-            return Err(EndpointError(format!(
-                "endpoint host `{host}` is in the internal domain `{suffix}`"
-            )));
-        }
-        if !host.contains('.') {
-            return Err(EndpointError(format!(
-                "endpoint host `{host}` is a single-label name,                  which resolves through the local search domain"
-            )));
-        }
-
-        Ok(())
+        validate_public_url(&url).map_err(|error| EndpointError(error.to_string()))
     }
 
     /// Resolve `raw`'s host, refusing it unless every address it answers with is
@@ -439,7 +389,7 @@ pub mod validation {
                 .await
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("not a public host"), "{err}");
+            assert!(err.contains("Private destinations are disabled"), "{err}");
             // The reason reaches the DAG author, so it must not name the address.
             assert!(!err.contains("127.0.0.1"), "{err}");
         }

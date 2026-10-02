@@ -29,7 +29,7 @@ strum_macros.workspace = true
 tokio.workspace = true
 log.workspace = true
 # === Nexus deps ===
-nexus-toolkit.workspace = true
+nexus-toolkit = { workspace = true, features = ["schema"] }
 nexus-sdk.workspace = true
 
 [dev-dependencies]
