@@ -288,14 +288,3 @@ mean to publish, and nothing else.
 
 Callers that want to publish content they supply themselves should use
 `upload-json`, which takes the bytes inline.
-
-### Publisher credentials
-
-The Google service identity is used only for the exact publisher URL configured
-by the operator in `WALRUS_PUBLISHER_URL`. A caller override cannot select a new
-audience for those credentials. Publisher requests use a separate HTTP client;
-aggregator reads and verification requests never receive its authentication
-header. Environment proxies and redirects are disabled on these transports.
-
-JSON schemas accept references within the supplied document only. Invalid schemas
-return validation errors without retrieving files or remote schemas.
