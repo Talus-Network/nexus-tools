@@ -10,11 +10,11 @@ The JSON data to upload.
 
 _opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus publisher URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus publisher URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus aggregator URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 _opt_ **`epochs`: [`u64`]** _default_: [`1`]
 
@@ -63,11 +63,11 @@ Standard Nexus Tool that uploads a file to Walrus and returns the blob ID.
 
 **`file_path`: [`String`]**
 
-The path to the file to upload.
+The path of the file to upload, relative to `WALRUS_UPLOAD_ROOT`. Uploading from a local path is **disabled** unless that variable is set. See [Local file uploads](#local-file-uploads).
 
 _opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus publisher URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus publisher URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 _opt_ **`epochs`: [`u64`]** _default_: [`1`]
 
@@ -117,7 +117,7 @@ The blob ID of the JSON file to read.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus aggregator URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 _opt_ **`json_schema`: [`Option<WalrusJsonSchema>`]** _default_: [`None`]
 
@@ -164,7 +164,7 @@ The unique identifier of the blob to read.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus aggregator URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 ## Output Variants & Ports
 
@@ -198,7 +198,7 @@ The ID of the blob to verify.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a valid URL with http:// or https:// scheme. If not provided, the default Walrus configuration will be used.
+The Walrus aggregator URL. Must be a bare `https://host[:port]` on the endpoint allowlist — no path, query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint allowlist](#endpoint-allowlist).
 
 ## Output Variants & Ports
 
@@ -223,3 +223,47 @@ An error occurred during verification.
   - Possible kinds:
     - `server` - Server-side errors during verification
 - **`err.status_code`: [`Option<u16>`]** - HTTP status code if available (for API errors)
+
+---
+
+# Configuration
+
+## Endpoint allowlist
+
+`publisher_url` and `aggregator_url` are caller-supplied, so they are confined
+to an allowlist of hosts. Anything else is refused while the input is being
+deserialized, before any request is made.
+
+The allowlist is a compile-time constant (`ALLOWED_HOSTS` in `src/utils.rs`),
+not a deployment variable — which storage network these tools talk to is a
+property of the tool, so widening it is a reviewed code change. It currently
+holds `walrus.space` and its subdomains (the public Walrus publishers and
+aggregators, including the SDK's defaults) and the mainnet publisher the leader
+is configured against.
+
+A deployment's own `WALRUS_PUBLISHER_URL` / `WALRUS_AGGREGATOR_URL` hosts are
+allowed too, matched exactly, so a caller naming the endpoint the tool would
+have used anyway is never refused.
+
+A URL must also be a bare `https://host[:port]`, with no path, query, fragment
+or credentials. That is not cosmetic — the SDK builds request URLs by
+concatenation (`{base}/v1/blobs/{id}`), so a base ending in `#` swallows
+everything appended to it and turns a blob read into a request for the host's
+root.
+
+## Local file uploads
+
+`upload-file`'s `file_path` is confined to one directory, named by
+**`WALRUS_UPLOAD_ROOT`**. The path is interpreted relative to that directory
+and cannot leave it: absolute paths and `..` are refused outright, and
+containment is re-checked after symlink resolution.
+
+With `WALRUS_UPLOAD_ROOT` unset — the default, and how the hosted tools run —
+`file_path` is refused entirely. A hosted instance of this tool has its
+toolkit signing key on a mounted volume and nothing a caller would legitimately
+want published, so a reachable local-read port there is only useful for
+exfiltrating secrets into public storage. Turn it on deliberately, pointed at a
+directory that holds the files you mean to publish, and nothing else.
+
+Callers that want to publish content they supply themselves should use
+`upload-json`, which takes the bytes inline.

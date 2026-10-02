@@ -179,9 +179,20 @@ async fn build_http_client(publisher_url: Option<&str>) -> reqwest::Client {
     }
 }
 
-/// True if the URL looks like a Google Cloud Run service URL (e.g. *.run.app).
+/// True if the URL's **host** is a Google Cloud Run service hostname
+/// (`*.run.app`).
+///
+/// This has to read the parsed host, not look for `.run.app` anywhere in the
+/// string: a substring test also matches `https://evil.example.com/.run.app/`
+/// and `https://svc.run.app@evil.example.com`, either of which would have the
+/// tool mint an OIDC identity token for its own service account and attach it
+/// to a request aimed at someone else's server. Those exact shapes were probed
+/// against this function on 2026-10-01.
 fn is_cloud_run_url(url: &str) -> bool {
-    url.contains(".run.app")
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|host| host == "run.app" || host.ends_with(".run.app"))
 }
 
 /// Fetch an OIDC ID token for the given audience from the GCE metadata
@@ -311,6 +322,18 @@ mod tests {
             "https://publisher.walrus-testnet.walrus.space"
         ));
         assert!(!is_cloud_run_url("http://localhost:8080"));
+    }
+
+    #[test]
+    fn cloud_run_detection_is_not_fooled_by_the_path_or_userinfo() {
+        // A substring check matched all of these and leaked an OIDC identity
+        // token for our own service account to the host on the right.
+        assert!(!is_cloud_run_url("https://evil.example.com/.run.app/"));
+        assert!(!is_cloud_run_url("https://evil.example.com/?x=.run.app"));
+        assert!(!is_cloud_run_url("https://evil.example.com/#.run.app"));
+        assert!(!is_cloud_run_url("https://svc.run.app@evil.example.com/"));
+        assert!(!is_cloud_run_url("https://notrun.app"));
+        assert!(!is_cloud_run_url("not a url at all"));
     }
 
     #[tokio::test]
