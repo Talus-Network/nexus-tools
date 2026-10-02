@@ -3,7 +3,7 @@
 //! Standard Nexus Tool that uploads a file to Walrus and returns the blob ID.
 
 use {
-    crate::client::WalrusConfig,
+    crate::{client::WalrusConfig, utils::validation::EndpointError},
     nexus_sdk::{
         fqn,
         walrus::{StorageInfo, WalrusError},
@@ -23,6 +23,8 @@ pub enum UploadFileError {
     UploadError(#[from] WalrusError),
     #[error("Invalid file data: {0}")]
     InvalidFile(String),
+    #[error("Refused endpoint: {0}")]
+    Endpoint(#[from] EndpointError),
 }
 
 /// Types of errors that can occur during file upload
@@ -120,7 +122,9 @@ impl NexusTool for UploadFile {
             Ok(storage_info) => handle_successful_upload(storage_info),
             Err(e) => {
                 let (kind, status_code) = match &e {
-                    UploadFileError::InvalidFile(_) => (UploadErrorKind::Validation, None),
+                    UploadFileError::InvalidFile(_) | UploadFileError::Endpoint(_) => {
+                        (UploadErrorKind::Validation, None)
+                    }
                     UploadFileError::UploadError(err) => {
                         let status_code = match err {
                             WalrusError::ApiError { status_code, .. } => Some(*status_code),
@@ -164,12 +168,8 @@ fn handle_successful_upload(storage_info: StorageInfo) -> Output {
     }
 }
 
-/// Resolve `file_path` to a real file the tool is permitted to read.
-///
-/// `file_path` is interpreted relative to `WALRUS_UPLOAD_ROOT` and cannot
-/// escape it; with no root configured, uploading from a local path is refused.
-/// See [`crate::utils::validation::resolve_upload_path_in`] for why the port is
-/// off by default.
+/// See [`crate::utils::validation::resolve_upload_path_in`] for why this port is
+/// off unless `WALRUS_UPLOAD_ROOT` is set.
 fn resolve_file_path(file_path: &str) -> Result<PathBuf, UploadFileError> {
     crate::utils::validation::resolve_upload_path(file_path).map_err(UploadFileError::InvalidFile)
 }
@@ -181,7 +181,7 @@ impl UploadFile {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(input.publisher_url)
             .build()
-            .await;
+            .await?;
 
         let storage_info = crate::client::with_publisher_retry(|| {
             walrus_client.upload_file(&file_path, input.epochs, input.send_to.clone())
@@ -203,21 +203,16 @@ mod tests {
         tokio::sync::Mutex,
     };
 
-    /// `WALRUS_UPLOAD_ROOT` is process-global, so the tests that point it at
-    /// their own fixture directory have to run one at a time.
+    /// `WALRUS_UPLOAD_ROOT` is process-global, so these tests run one at a time.
     static UPLOAD_ROOT_LOCK: Mutex<()> = Mutex::const_new(());
 
-    /// Points `WALRUS_UPLOAD_ROOT` at a fresh directory for the duration of a
-    /// test and writes `name` into it. Returns the directory so the caller can
-    /// keep the guard alive.
+    /// Points `WALRUS_UPLOAD_ROOT` at a fresh directory for one test.
     struct UploadRoot {
         _guard: tokio::sync::MutexGuard<'static, ()>,
         dir: PathBuf,
     }
 
     impl UploadRoot {
-        /// `key` names the fixture directory (one per test); `files` are
-        /// written into it.
         async fn new(key: &str, files: &[(&str, &str)]) -> Self {
             let guard = UPLOAD_ROOT_LOCK.lock().await;
             let dir = std::env::temp_dir()
@@ -231,6 +226,20 @@ mod tests {
             }
             std::env::set_var("WALRUS_UPLOAD_ROOT", &dir);
             Self { _guard: guard, dir }
+        }
+    }
+
+    /// Holds the lock with `WALRUS_UPLOAD_ROOT` unset. Without the lock a
+    /// concurrent test's root leaks in and the refusal reason changes.
+    struct NoUploadRoot {
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl NoUploadRoot {
+        async fn new() -> Self {
+            let guard = UPLOAD_ROOT_LOCK.lock().await;
+            std::env::remove_var("WALRUS_UPLOAD_ROOT");
+            Self { _guard: guard }
         }
     }
 
@@ -281,7 +290,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_upload_file_newly_created() {
-        // Create test file inside the configured upload root
         let file_path = "test.txt";
         let _root = UploadRoot::new("newly-created", &[(file_path, "test")]).await;
 
@@ -315,8 +323,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
@@ -394,8 +404,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
@@ -464,8 +476,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadFile::with_custom_client();
@@ -473,7 +487,9 @@ mod tests {
             Ok(storage_info) => handle_successful_upload(storage_info),
             Err(e) => {
                 let (kind, status_code) = match &e {
-                    UploadFileError::InvalidFile(_) => (UploadErrorKind::Validation, None),
+                    UploadFileError::InvalidFile(_) | UploadFileError::Endpoint(_) => {
+                        (UploadErrorKind::Validation, None)
+                    }
                     UploadFileError::UploadError(err) => {
                         let status_code = match err {
                             WalrusError::ApiError { status_code, .. } => Some(*status_code),
@@ -512,8 +528,7 @@ mod tests {
         mock.assert_async().await;
     }
 
-    /// Run the tool and return the validation `reason`, failing the test on any
-    /// other outcome.
+    /// The validation `reason`, failing the test on any other outcome.
     async fn invoke_expecting_validation_error(file_path: &str) -> String {
         let input = Input {
             file_path: file_path.to_string(),
@@ -546,13 +561,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_upload_disabled_without_root() {
+        let _no_root = NoUploadRoot::new().await;
+
         let reason = invoke_expecting_validation_error("/app/secrets/toolkit-config.json").await;
         assert!(reason.contains("disabled"), "{reason}");
     }
 
-    /// The paths read and published to Walrus during the 2026-09-30 run. With
-    /// an upload root configured they are still outside it, so they stay
-    /// unreadable.
+    /// The paths published to Walrus during the 2026-09-30 run. Configuring an
+    /// upload root does not bring them back within reach.
     #[tokio::test]
     async fn test_exfiltration_paths_are_refused_with_a_root_configured() {
         let _root = UploadRoot::new("exfil-paths", &[]).await;
@@ -574,20 +590,35 @@ mod tests {
         }
     }
 
+    /// The port is gated at deserialization, so a DAG naming a private target
+    /// never reaches `invoke`.
     #[test]
-    fn refused_endpoints_fail_input_deserialization() {
-        // The publisher port is gated at deserialization, so a DAG naming a
-        // host that is not allowlisted never reaches `invoke`.
+    fn private_publishers_fail_input_deserialization() {
         for publisher_url in [
             "http://169.254.169.254/#",
             "http://metadata.google.internal/#",
             "http://127.0.0.1:8080",
-            "https://abc123.oast.site",
+            "http://metadata/computeMetadata/v1/",
         ] {
             let json = json!({ "file_path": "x", "publisher_url": publisher_url });
             assert!(
                 serde_json::from_value::<Input>(json).is_err(),
                 "expected {publisher_url} to be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_public_publisher_of_the_callers_choosing_is_accepted() {
+        for publisher_url in [
+            "https://publisher.walrus-testnet.walrus.space",
+            "https://walrus-mainnet-publisher-1.staketab.org",
+            "http://walrus-testnet.suicore.com",
+        ] {
+            let json = json!({ "file_path": "x", "publisher_url": publisher_url });
+            assert!(
+                serde_json::from_value::<Input>(json).is_ok(),
+                "expected {publisher_url} to be accepted"
             );
         }
     }

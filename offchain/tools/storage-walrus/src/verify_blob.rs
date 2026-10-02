@@ -3,7 +3,7 @@
 //! Standard Nexus Tool that verifies a blob.
 
 use {
-    crate::client::WalrusConfig,
+    crate::{client::WalrusConfig, utils::validation::EndpointError},
     nexus_sdk::{fqn, walrus::WalrusError, ToolFqn},
     nexus_toolkit::*,
     schemars::JsonSchema,
@@ -16,6 +16,8 @@ use {
 pub enum VerifyBlobError {
     #[error("Failed to verify blob: {0}")]
     VerificationError(#[from] WalrusError),
+    #[error("Refused endpoint: {0}")]
+    Endpoint(#[from] EndpointError),
 }
 
 #[derive(Serialize, JsonSchema, Debug, Clone)]
@@ -125,7 +127,7 @@ impl VerifyBlob {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(input.aggregator_url)
             .build()
-            .await;
+            .await?;
 
         let is_verified = walrus_client
             .verify_blob(&input.blob_id)
@@ -189,8 +191,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = VerifyBlob::with_custom_client();
@@ -246,8 +250,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = VerifyBlob::with_custom_client();
@@ -310,8 +316,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = VerifyBlob::with_custom_client();

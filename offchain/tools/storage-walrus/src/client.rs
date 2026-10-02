@@ -56,9 +56,10 @@
 //! [Cloud Run IAM roles]: https://cloud.google.com/run/docs/reference/iam/roles#standard-roles
 
 use {
+    crate::utils::validation::{resolve_public_endpoint, EndpointError},
     nexus_sdk::walrus::{WalrusClient, WalrusError},
     reqwest::header::{HeaderMap, HeaderName, HeaderValue},
-    std::{future::Future, time::Duration},
+    std::{future::Future, net::SocketAddr, time::Duration},
 };
 
 /// Header name Cloud Run uses to receive an OIDC ID token *without* forwarding
@@ -91,6 +92,18 @@ const METADATA_IDENTITY_URL: &str =
 /// instead of hanging the publisher build forever.
 const METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// What a caller-supplied endpoint may resolve to.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum TargetPolicy {
+    /// What the deployed tools run with.
+    #[default]
+    PublicOnly,
+    /// For tests and for driving a publisher on the loopback interface during
+    /// local development. Not constructed by the binary itself.
+    #[allow(dead_code)]
+    Unrestricted,
+}
+
 /// Configuration for Walrus client
 #[derive(Default)]
 pub struct WalrusConfig {
@@ -98,6 +111,8 @@ pub struct WalrusConfig {
     pub publisher_url: Option<String>,
     /// The URL of the aggregator
     pub aggregator_url: Option<String>,
+    /// What a caller-supplied endpoint may resolve to
+    pub target_policy: TargetPolicy,
 }
 
 impl WalrusConfig {
@@ -118,6 +133,12 @@ impl WalrusConfig {
         self
     }
 
+    /// Set the target policy. Defaults to [`TargetPolicy::PublicOnly`].
+    pub fn with_target_policy(mut self, policy: TargetPolicy) -> Self {
+        self.target_policy = policy;
+        self
+    }
+
     /// Build a WalrusClient with the configured settings.
     ///
     /// URL resolution order (per side, publisher and aggregator):
@@ -125,12 +146,37 @@ impl WalrusConfig {
     ///   2. Env var (`WALRUS_PUBLISHER_URL` / `WALRUS_AGGREGATOR_URL`)
     ///   3. SDK defaults (public Walrus endpoints)
     ///
+    /// Under [`TargetPolicy::PublicOnly`] each URL supplied through `with_*_url`
+    /// is looked up, refused unless every address it answers with is public, and
+    /// pinned onto the HTTP client. Pinning is what makes the check binding:
+    /// without it the connection does its own lookup, and a name with alternating
+    /// records passes the check and then connects to the private address.
+    ///
     /// When the resolved publisher URL points at a private Google Cloud Run host
     /// (`*.run.app`), an OIDC ID token is fetched from the GCE metadata server
     /// and attached as a default `Authorization: Bearer` header on every request.
     /// This authenticates requests against Cloud Run services with
     /// `INGRESS_TRAFFIC_INTERNAL_ONLY` and `roles/run.invoker` enforcement.
-    pub async fn build(self) -> WalrusClient {
+    pub async fn build(self) -> Result<WalrusClient, EndpointError> {
+        // Only `with_*_url` values are checked — those are the input ports. The
+        // env vars and SDK defaults are deployment configuration, and an operator
+        // pointing the tool at a publisher inside their own network is a
+        // legitimate setup, not the attack this guards against.
+        let mut pins: Vec<(String, Vec<SocketAddr>)> = Vec::new();
+        if self.target_policy == TargetPolicy::PublicOnly {
+            for url in [
+                self.publisher_url.as_deref(),
+                self.aggregator_url.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(pin) = resolve_public_endpoint(url).await? {
+                    pins.push(pin);
+                }
+            }
+        }
+
         let publisher_url = self
             .publisher_url
             .or_else(|| std::env::var(ENV_PUBLISHER_URL).ok());
@@ -138,7 +184,7 @@ impl WalrusConfig {
             .aggregator_url
             .or_else(|| std::env::var(ENV_AGGREGATOR_URL).ok());
 
-        let http_client = build_http_client(publisher_url.as_deref()).await;
+        let http_client = build_http_client(publisher_url.as_deref(), &pins).await;
 
         let mut client_builder = WalrusClient::builder().with_client(http_client);
         if let Some(ref url) = publisher_url {
@@ -147,17 +193,29 @@ impl WalrusConfig {
         if let Some(ref url) = aggregator_url {
             client_builder = client_builder.with_aggregator_url(url);
         }
-        client_builder.build()
+        Ok(client_builder.build())
     }
 }
 
-/// Build a reqwest::Client that, when targeting a Cloud Run host, carries an OIDC
-/// ID token as a default Authorization header. Falls back to a plain client on
-/// any failure (the request will then fail at the publisher with a 401/403 if
-/// auth is actually required, which is the same outcome as today's behaviour).
-async fn build_http_client(publisher_url: Option<&str>) -> reqwest::Client {
+/// Build a reqwest::Client pinned to `pins` that, when targeting a Cloud Run
+/// host, carries an OIDC ID token as a default Authorization header. Falls back
+/// to the pins alone on any auth failure: the request then surfaces a 401/403
+/// from Cloud Run, the same outcome a misconfigured deployment produces.
+async fn build_http_client(
+    publisher_url: Option<&str>,
+    pins: &[(String, Vec<SocketAddr>)],
+) -> reqwest::Client {
+    let pinned = || {
+        let mut builder = reqwest::Client::builder();
+        for (host, addrs) in pins {
+            builder = builder.resolve_to_addrs(host, addrs);
+        }
+        builder
+    };
+    let fallback = || pinned().build().unwrap_or_else(|_| reqwest::Client::new());
+
     let Some(audience) = publisher_url.filter(|u| is_cloud_run_url(u)) else {
-        return reqwest::Client::new();
+        return fallback();
     };
 
     match fetch_id_token(audience).await {
@@ -168,26 +226,26 @@ async fn build_http_client(publisher_url: Option<&str>) -> reqwest::Client {
                 // consumes the token for IAM and strips it before passing
                 // the request on to the publisher container.
                 headers.insert(X_SERVERLESS_AUTHORIZATION.clone(), value);
-                reqwest::Client::builder()
+                pinned()
                     .default_headers(headers)
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new())
             }
-            Err(_) => reqwest::Client::new(),
+            Err(_) => fallback(),
         },
-        Err(_) => reqwest::Client::new(),
+        Err(_) => fallback(),
     }
 }
 
 /// True if the URL's **host** is a Google Cloud Run service hostname
 /// (`*.run.app`).
 ///
-/// This has to read the parsed host, not look for `.run.app` anywhere in the
-/// string: a substring test also matches `https://evil.example.com/.run.app/`
-/// and `https://svc.run.app@evil.example.com`, either of which would have the
-/// tool mint an OIDC identity token for its own service account and attach it
-/// to a request aimed at someone else's server. Those exact shapes were probed
-/// against this function on 2026-10-01.
+/// Reads the parsed host rather than looking for `.run.app` anywhere in the
+/// string, because a substring test also matches
+/// `https://evil.example.com/.run.app/` and `https://svc.run.app@evil.example.com`
+/// — either of which has the tool mint an OIDC identity token for its own
+/// service account and attach it to a request aimed at someone else's server.
+/// Both shapes were probed against this function on 2026-10-01.
 fn is_cloud_run_url(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
@@ -326,8 +384,6 @@ mod tests {
 
     #[test]
     fn cloud_run_detection_is_not_fooled_by_the_path_or_userinfo() {
-        // A substring check matched all of these and leaked an OIDC identity
-        // token for our own service account to the host on the right.
         assert!(!is_cloud_run_url("https://evil.example.com/.run.app/"));
         assert!(!is_cloud_run_url("https://evil.example.com/?x=.run.app"));
         assert!(!is_cloud_run_url("https://evil.example.com/#.run.app"));
@@ -339,13 +395,13 @@ mod tests {
     #[tokio::test]
     async fn build_http_client_returns_plain_for_no_url() {
         // None URL must skip the metadata-server path entirely.
-        let _ = build_http_client(None).await;
+        let _ = build_http_client(None, &[]).await;
     }
 
     #[tokio::test]
     async fn build_http_client_returns_plain_for_non_cloud_run_url() {
         // Non-Cloud-Run URL must skip the metadata-server path entirely.
-        let _ = build_http_client(Some("https://publisher.walrus-testnet.walrus.space")).await;
+        let _ = build_http_client(Some("https://publisher.walrus-testnet.walrus.space"), &[]).await;
     }
 
     #[tokio::test]
@@ -353,7 +409,7 @@ mod tests {
         // Cloud Run URL → fetch_id_token is invoked, which fails because
         // metadata.google.internal is unreachable from the test environment.
         // The fallback path should still return a usable client.
-        let _ = build_http_client(Some("https://test-service-abc-uc.a.run.app")).await;
+        let _ = build_http_client(Some("https://test-service-abc-uc.a.run.app"), &[]).await;
     }
 
     #[tokio::test]

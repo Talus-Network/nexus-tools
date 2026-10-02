@@ -3,7 +3,7 @@
 //! Standard Nexus Tool that reads a JSON file from Walrus and returns the JSON data.
 
 use {
-    crate::client::WalrusConfig,
+    crate::{client::WalrusConfig, utils::validation::EndpointError},
     nexus_sdk::{fqn, walrus::WalrusError, ToolFqn},
     nexus_toolkit::*,
     schemars::JsonSchema,
@@ -18,6 +18,8 @@ use {
 pub enum ReadJsonError {
     #[error("Failed to read JSON: {0}")]
     ReadError(#[from] WalrusError),
+    #[error("Refused endpoint: {0}")]
+    Endpoint(#[from] EndpointError),
     #[error("Invalid JSON data: {0}")]
     InvalidJson(String),
     #[error("JSON validation error: {0}")]
@@ -185,7 +187,7 @@ impl ReadJson {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(aggregator_url)
             .build()
-            .await;
+            .await?;
 
         let storage_info = walrus_client.read_json(&blob_id).await?;
 
@@ -246,8 +248,10 @@ mod tests {
         let server = Server::new_async().await;
         let client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         (server, client)
     }

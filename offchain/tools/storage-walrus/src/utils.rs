@@ -1,62 +1,50 @@
 //! Input validation policy for the Walrus tools.
 //!
-//! Every tool in this crate takes a caller-supplied endpoint URL, and
-//! `upload-file` takes a caller-supplied filesystem path. Both are reachable
-//! by anyone who can submit a DAG, so both are treated as untrusted input:
+//! Anyone who can submit a DAG controls `publisher_url` / `aggregator_url` and
+//! `upload-file`'s `file_path`. Picking your own Walrus endpoint is the point of
+//! the URL ports, so they stay open to any *public* endpoint and closed to the
+//! private side of the network — the cloud metadata server, the container's
+//! loopback, the VPC. `file_path` has no such legitimate use on a hosted tool
+//! and is off unless an upload root is configured.
 //!
-//! * [`validation::deserialize_url_opt`] confines `publisher_url` /
-//!   `aggregator_url` to an allowlist of hosts, so the ports cannot be used to
-//!   reach the cloud metadata server, the container's own loopback, or an
-//!   arbitrary host on the internet.
-//! * [`validation::resolve_upload_path`] confines `upload-file`'s `file_path`
-//!   to one configured directory, so the port cannot be used to read the
-//!   container's mounted secrets and publish them to Walrus.
-//!
-//! Both policies are deny-by-default: the endpoint allowlist is a compile-time
-//! constant holding only known Walrus hosts, and local-path uploads are refused
-//! outright until an upload root is configured.
+//! The endpoint policy is in two parts because refusing `169.254.169.254` and
+//! `metadata.google.internal` by name is a one-line bypass away from useless:
+//! any public name can resolve to a private address. So the host is also looked
+//! up, and the addresses it answered with are pinned onto the HTTP client —
+//! otherwise the connection does its own lookup and a name with alternating
+//! records passes the check, then connects to the private address.
 
 pub mod validation {
     use {
         reqwest::Url,
         serde::{de, Deserialize, Deserializer},
-        std::path::{Component, Path, PathBuf},
+        std::{
+            net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+            path::{Component, Path, PathBuf},
+            time::Duration,
+        },
     };
 
-    /// Ops-configured default endpoints (see [`crate::client`]). Their hosts
-    /// are allowed implicitly — a caller passing the URL the tool would have
-    /// used anyway must not be refused.
-    const ENV_PUBLISHER_URL: &str = "WALRUS_PUBLISHER_URL";
-    const ENV_AGGREGATOR_URL: &str = "WALRUS_AGGREGATOR_URL";
-
-    /// The directory `upload-file` may read from. Unset (the default) means
-    /// local-path uploads are refused entirely.
+    /// Unset (the default) refuses local-path uploads entirely.
     const ENV_UPLOAD_ROOT: &str = "WALRUS_UPLOAD_ROOT";
 
-    /// The Walrus endpoints a caller may name. Deliberately a compile-time
-    /// list and not a knob: which storage network these tools will talk to is a
-    /// property of the tool, so widening it is a reviewed code change rather
-    /// than a deployment variable someone can quietly set.
-    ///
-    /// An entry is an exact host, or — with a leading dot — that domain and its
-    /// subdomains.
-    ///
-    ///   * `walrus.space` is Mysten's domain, carrying the testnet and mainnet
-    ///     publishers and aggregators, including the SDK's defaults.
-    ///   * `walrus-mainnet-publisher-1.staketab.org` is the mainnet publisher
-    ///     the leader is configured against (tf-talus-nexus-v2, mainnet-v2
-    ///     `publisher_url`); the hosted tools set no `WALRUS_PUBLISHER_URL`, so
-    ///     mainnet uploads name it in the input port.
-    const ALLOWED_HOSTS: &[&str] = &[
-        "walrus.space",
-        ".walrus.space",
-        "walrus-mainnet-publisher-1.staketab.org",
-    ];
+    /// `.internal` is where the GCE metadata server lives.
+    const PRIVATE_DOMAIN_SUFFIXES: &[&str] =
+        &[".internal", ".local", ".localhost", ".home.arpa", ".arpa"];
 
-    /// Deserializer for the optional `publisher_url` / `aggregator_url` input
-    /// ports. Rejecting here rather than inside `invoke` keeps the tools'
-    /// output schemas unchanged and means a refused endpoint never reaches the
-    /// HTTP client at all.
+    /// Keeps a caller from parking a request on an unresponsive resolver for the
+    /// whole tool timeout.
+    const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// An endpoint a caller named that the tool will not talk to.
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    pub struct EndpointError(String);
+
+    /// Rejecting here rather than inside `invoke` keeps the tools' output schemas
+    /// unchanged. The resolved half of the policy runs in
+    /// [`crate::client::WalrusConfig::build`], which has an async context to do
+    /// the lookup in.
     pub fn deserialize_url_opt<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
     where
         D: Deserializer<'de>,
@@ -68,89 +56,219 @@ pub mod validation {
         Ok(opt)
     }
 
-    /// [`check_endpoint_url_against`] with the deployment's own endpoint hosts
-    /// read from the environment.
-    pub(crate) fn check_endpoint_url(raw: &str) -> Result<(), String> {
-        check_endpoint_url_against(&deployment_endpoint_hosts(), raw)
-    }
-
-    /// Accept `raw` only if it is a bare `https://host[:port]` whose host is on
-    /// [`ALLOWED_HOSTS`] or in `deployment_hosts`.
+    /// The half of the policy that needs no I/O.
     ///
-    /// The shape restrictions are not cosmetic. The SDK builds request URLs by
-    /// string concatenation (`{base}/v1/blobs/{id}`), so a base carrying a
-    /// fragment swallows everything appended after it: `https://host/#` reads
-    /// the host's root instead of a blob. Refusing any path, query, fragment or
-    /// userinfo leaves exactly one thing for the allowlist to decide, which is
-    /// the host.
-    pub(crate) fn check_endpoint_url_against(
-        deployment_hosts: &[String],
-        raw: &str,
-    ) -> Result<(), String> {
-        let url = Url::parse(raw).map_err(|e| e.to_string())?;
+    /// The query and fragment rules are what they are because the SDK builds
+    /// request URLs by string concatenation (`{base}/v1/blobs/{id}`): a base
+    /// carrying either one swallows everything appended after it, so
+    /// `http://host/#` reads the host's root instead of a blob. That is how the
+    /// 2026-09-30 metadata probes got a response at all. A path concatenates the
+    /// way the SDK expects, so an aggregator served under a prefix still works.
+    pub(crate) fn check_endpoint_url(raw: &str) -> Result<(), EndpointError> {
+        let url = Url::parse(raw).map_err(|e| EndpointError(e.to_string()))?;
 
-        if url.scheme() != "https" {
-            return Err(format!("endpoint must use https, got `{}`", url.scheme()));
+        let scheme = url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(EndpointError(format!(
+                "endpoint scheme `{scheme}` is not allowed"
+            )));
         }
         if !url.username().is_empty() || url.password().is_some() {
-            return Err("endpoint must not carry credentials".to_string());
+            return Err(EndpointError(
+                "endpoint must not carry credentials".to_string(),
+            ));
         }
         if url.query().is_some() {
-            return Err("endpoint must not carry a query string".to_string());
+            return Err(EndpointError(
+                "endpoint must not carry a query string".to_string(),
+            ));
         }
         if url.fragment().is_some() {
-            return Err("endpoint must not carry a fragment".to_string());
-        }
-        if !url.path().is_empty() && url.path() != "/" {
-            return Err(format!(
-                "endpoint must not carry a path, got `{}`",
-                url.path()
+            return Err(EndpointError(
+                "endpoint must not carry a fragment".to_string(),
             ));
         }
 
         let Some(host) = url.host_str() else {
-            return Err("endpoint must have a host".to_string());
+            return Err(EndpointError("endpoint must have a host".to_string()));
         };
-        let host = host.to_ascii_lowercase();
+        check_endpoint_host(host)
+    }
 
-        let allowed = ALLOWED_HOSTS.iter().any(|entry| host_matches(&host, entry))
-            || deployment_hosts.contains(&host);
-        if !allowed {
-            return Err(format!(
-                "endpoint host `{host}` is not a known Walrus endpoint"
+    /// The hosts that can be refused without resolving them.
+    ///
+    /// The single-label rule is the non-obvious one: a bare `metadata` resolves
+    /// through the container's DNS search list, which on GCE ends at
+    /// `google.internal`, so a name with no dot in it reaches the metadata
+    /// server.
+    fn check_endpoint_host(host: &str) -> Result<(), EndpointError> {
+        if let Some(ip) = host_as_ip(host) {
+            return if is_public_ip(ip) {
+                Ok(())
+            } else {
+                Err(EndpointError(format!(
+                    "endpoint address `{ip}` is not a public address"
+                )))
+            };
+        }
+
+        let host = host.to_ascii_lowercase();
+        if host == "localhost" {
+            return Err(EndpointError(
+                "endpoint host `localhost` is not a public host".to_string(),
             ));
+        }
+        if let Some(suffix) = PRIVATE_DOMAIN_SUFFIXES
+            .iter()
+            .find(|suffix| host.ends_with(*suffix))
+        {
+            return Err(EndpointError(format!(
+                "endpoint host `{host}` is in the internal domain `{suffix}`"
+            )));
+        }
+        if !host.contains('.') {
+            return Err(EndpointError(format!(
+                "endpoint host `{host}` is a single-label name,                  which resolves through the local search domain"
+            )));
         }
 
         Ok(())
     }
 
-    /// Hosts of the endpoints this deployment is configured to use. A caller
-    /// naming the URL the tool would have used anyway must not be refused, and
-    /// these are set by whoever deployed the tool rather than by the caller.
-    fn deployment_endpoint_hosts() -> Vec<String> {
-        [ENV_PUBLISHER_URL, ENV_AGGREGATOR_URL]
-            .iter()
-            .filter_map(|var| std::env::var(var).ok())
-            .filter_map(|raw| {
-                Url::parse(&raw)
-                    .ok()
-                    .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-            })
-            .filter(|host| !host.is_empty())
-            .collect()
+    /// Resolve `raw`'s host, refusing it unless every address it answers with is
+    /// public, and return the addresses for the caller to pin onto its HTTP
+    /// client.
+    ///
+    /// `None` means there is nothing to pin: an IP literal needs no lookup, and
+    /// [`check_endpoint_url`] has already settled whether it is public.
+    pub(crate) async fn resolve_public_endpoint(
+        raw: &str,
+    ) -> Result<Option<(String, Vec<SocketAddr>)>, EndpointError> {
+        let url = Url::parse(raw).map_err(|e| EndpointError(e.to_string()))?;
+        let Some(host) = url.host_str() else {
+            return Err(EndpointError("endpoint must have a host".to_string()));
+        };
+        if host_as_ip(host).is_some() {
+            return Ok(None);
+        }
+
+        let port = url.port_or_known_default().unwrap_or(443);
+        let lookup = tokio::net::lookup_host((host, port));
+        let addrs: Vec<SocketAddr> = tokio::time::timeout(RESOLVE_TIMEOUT, lookup)
+            .await
+            .map_err(|_| EndpointError(format!("endpoint host `{host}` did not resolve in time")))?
+            .map_err(|e| EndpointError(format!("endpoint host `{host}` did not resolve: {e}")))?
+            .collect();
+
+        if addrs.is_empty() {
+            return Err(EndpointError(format!(
+                "endpoint host `{host}` resolved to no addresses"
+            )));
+        }
+        if let Some(addr) = addrs.iter().find(|addr| !is_public_ip(addr.ip())) {
+            return Err(EndpointError(format!(
+                "endpoint host `{host}` resolves to `{}`, which is not a public address",
+                addr.ip()
+            )));
+        }
+
+        Ok(Some((host.to_string(), addrs)))
     }
 
-    /// `host` matches `entry` exactly, or — for a dot-prefixed `entry` — is
-    /// that domain or any subdomain of it. Both are expected lowercase.
-    fn host_matches(host: &str, entry: &str) -> bool {
-        match entry.strip_prefix('.') {
-            Some(domain) => host == domain || host.ends_with(entry),
-            None => host == entry,
+    /// Parse `host` as an IP literal, accepting the bracketed IPv6 form `Url`
+    /// produces. Oddities like `http://2130706433/` need no handling: `Url`
+    /// normalizes those to dotted-quad while parsing.
+    fn host_as_ip(host: &str) -> Option<IpAddr> {
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
+            .parse()
+            .ok()
+    }
+
+    /// True if `addr` is routable on the public internet. The ranges are spelled
+    /// out because `IpAddr::is_global` is still unstable.
+    pub(crate) fn is_public_ip(addr: IpAddr) -> bool {
+        match addr {
+            IpAddr::V4(ip) => is_public_ipv4(ip),
+            IpAddr::V6(ip) => is_public_ipv6(ip),
         }
     }
 
-    /// [`resolve_upload_path_in`] with the upload root read from the
-    /// environment.
+    fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+        let o = ip.octets();
+        !(ip.is_loopback()
+            || ip.is_private()
+            // 169.254.0.0/16 link-local, where every cloud metadata server lives
+            || ip.is_link_local()
+            || ip.is_multicast()
+            || ip.is_documentation()
+            // 0.0.0.0/8 "this network", which includes the unspecified address
+            || o[0] == 0
+            // 100.64.0.0/10 carrier-grade NAT
+            || (o[0] == 100 && (o[1] & 0xc0) == 64)
+            // 192.0.0.0/24 IETF protocol assignments
+            || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+            // 192.88.99.0/24 former 6to4 relay anycast
+            || (o[0] == 192 && o[1] == 88 && o[2] == 99)
+            // 198.18.0.0/15 benchmarking
+            || (o[0] == 198 && (o[1] & 0xfe) == 18)
+            // 240.0.0.0/4 reserved, up to and including the broadcast address
+            || o[0] >= 240)
+    }
+
+    fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+        // A v6 address carrying a v4 one reaches that v4 address, so the v4
+        // ranges are what decide.
+        if let Some(v4) = embedded_ipv4(ip) {
+            return is_public_ipv4(v4);
+        }
+
+        let s = ip.segments();
+        !(ip.is_unspecified()
+            || ip.is_loopback()
+            || ip.is_multicast()
+            // fc00::/7 unique local
+            || (s[0] & 0xfe00) == 0xfc00
+            // fe80::/10 link-local
+            || (s[0] & 0xffc0) == 0xfe80
+            // 2001:db8::/32 documentation
+            || (s[0] == 0x2001 && s[1] == 0x0db8)
+            // 100::/64 discard-only
+            || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0))
+    }
+
+    /// The v4 address a v6 address stands in for, across the mapped, compatible,
+    /// 6to4 and NAT64 forms.
+    fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+        // Both ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible).
+        if let Some(v4) = ip.to_ipv4() {
+            return Some(v4);
+        }
+
+        let s = ip.segments();
+        let embedded = |hi: u16, lo: u16| {
+            Ipv4Addr::new(
+                (hi >> 8) as u8,
+                (hi & 0xff) as u8,
+                (lo >> 8) as u8,
+                (lo & 0xff) as u8,
+            )
+        };
+
+        // 2002::/16 6to4
+        if s[0] == 0x2002 {
+            return Some(embedded(s[1], s[2]));
+        }
+        // 64:ff9b::/96 NAT64
+        if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+            return Some(embedded(s[6], s[7]));
+        }
+
+        None
+    }
+
+    /// [`resolve_upload_path_in`] with the root read from the environment.
     pub(crate) fn resolve_upload_path(file_path: &str) -> Result<PathBuf, String> {
         let root = std::env::var(ENV_UPLOAD_ROOT)
             .ok()
@@ -158,17 +276,13 @@ pub mod validation {
         resolve_upload_path_in(root.as_deref(), file_path)
     }
 
-    /// Resolve `upload-file`'s `file_path` input to a real file inside `root`.
+    /// Resolve `upload-file`'s `file_path` to a real file inside `root`.
     ///
-    /// `file_path` is relative to `root` and may not escape it. Containment is
-    /// checked after `canonicalize`, so a symlink pointing out of the root is
-    /// rejected along with a literal `../`.
-    ///
-    /// With no `root` configured the port is refused outright. The container
-    /// this tool runs in holds its signing key on a mounted volume and nothing
-    /// a caller would legitimately want to upload, so a reachable local-read
-    /// port is a secret-exfiltration primitive and nothing else; it has to be
-    /// turned on deliberately by whoever actually has files to publish.
+    /// With no `root` configured the port is refused outright: a hosted instance
+    /// of this tool has its signing key on a mounted volume and nothing a caller
+    /// would legitimately want published, so a local-read port there is only an
+    /// exfiltration primitive. It has to be turned on deliberately by whoever
+    /// actually has files to publish.
     pub(crate) fn resolve_upload_path_in(
         root: Option<&str>,
         file_path: &str,
@@ -215,169 +329,197 @@ pub mod validation {
     mod tests {
         use super::*;
 
-        /// Stand-in for the hosts a deployment's own `WALRUS_PUBLISHER_URL` /
-        /// `WALRUS_AGGREGATOR_URL` contribute.
-        fn deployed(entries: &[&str]) -> Vec<String> {
-            entries.iter().map(|e| e.to_string()).collect()
-        }
-
-        // --- endpoint policy ---
+        // --- endpoint policy: shape ---
 
         #[test]
-        fn official_walrus_endpoints_are_allowed() {
+        fn public_walrus_endpoints_are_accepted() {
             for url in [
                 "https://publisher.walrus-testnet.walrus.space",
-                "https://aggregator.walrus-testnet.walrus.space",
                 "https://aggregator.walrus-mainnet.walrus.space",
                 "https://walrus-mainnet-publisher-1.staketab.org",
-                "https://walrus.space",
+                // Plaintext and odd ports are common among community operators.
+                "http://walrus-testnet.suicore.com",
+                "https://walrus.example.com:9000",
+                "https://cdn.example.com/walrus",
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], url).is_ok(),
-                    "expected {url} to be allowed"
+                    check_endpoint_url(url).is_ok(),
+                    "expected {url} to be accepted: {:?}",
+                    check_endpoint_url(url).err()
                 );
             }
         }
 
         #[test]
-        fn metadata_server_is_refused() {
-            // The 2026-09-30 probes, verbatim. The trailing `#` is what made
-            // the SDK's `{base}/v1/blobs/{id}` concatenation read the host root.
+        fn metadata_servers_are_refused() {
+            // The 2026-09-30 probes, verbatim.
             for url in [
                 "http://169.254.169.254/#",
                 "http://metadata.google.internal/#",
                 "https://metadata.google.internal",
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                // ECS task metadata, and Alibaba's.
+                "http://169.254.170.2/v2/credentials/",
+                "http://100.100.100.200/latest/meta-data/",
+                // Decimal and hex spellings of 169.254.169.254.
+                "http://2852039166/",
+                "http://0xA9FEA9FE/",
+                "http://metadata/computeMetadata/v1/",
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], url).is_err(),
+                    check_endpoint_url(url).is_err(),
                     "expected {url} to be refused"
                 );
             }
         }
 
         #[test]
-        fn loopback_is_refused() {
+        fn loopback_and_private_ranges_are_refused() {
             for url in [
                 "http://127.0.0.1:8080",
-                "https://127.0.0.1:8080",
                 "http://localhost:8080",
-                "https://localhost",
+                "https://LOCALHOST",
+                "http://[::1]:8080",
+                "http://10.0.0.5",
+                "http://172.16.0.1",
+                "http://192.168.1.1",
+                "http://0.0.0.0",
+                "http://[fd00::1]",
+                "http://[fe80::1]",
+                "http://[::ffff:169.254.169.254]",
+                "http://[::ffff:127.0.0.1]",
+                "http://[2002:a9fe:a9fe::]",
+                "http://[64:ff9b::a9fe:a9fe]",
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], url).is_err(),
+                    check_endpoint_url(url).is_err(),
                     "expected {url} to be refused"
                 );
             }
         }
 
         #[test]
-        fn arbitrary_internet_hosts_are_refused() {
+        fn internal_domain_suffixes_are_refused() {
             for url in [
-                "https://abc123.oast.site",
-                "https://webhook.site/deadbeef",
-                "https://evil.example.com",
+                "https://walrus.tools.internal",
+                "http://walrus.nexus.local",
+                "http://publisher.localhost",
+                "https://1.0.0.127.in-addr.arpa",
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], url).is_err(),
+                    check_endpoint_url(url).is_err(),
                     "expected {url} to be refused"
                 );
             }
         }
 
         #[test]
-        fn lookalike_domains_do_not_match_the_suffix() {
-            for url in [
-                "https://notwalrus.space",
-                "https://walrus.space.evil.com",
-                "https://walrus-space.evil.com",
-                "https://walrus-mainnet-publisher-1.staketab.org.evil.com",
-            ] {
-                assert!(
-                    check_endpoint_url_against(&[], url).is_err(),
-                    "expected {url} to be refused"
-                );
-            }
-        }
-
-        #[test]
-        fn cloud_run_path_suffix_bypass_is_refused() {
-            // Probed on 2026-10-01 against the substring `.run.app` check in
-            // `client::is_cloud_run_url`.
-            assert!(check_endpoint_url_against(&[], "https://evil.example.com/.run.app/").is_err());
-            assert!(check_endpoint_url_against(
-                &deployed(&["walrus-publisher-mainnet-oozmyfiqvq-ue.a.run.app"]),
-                "https://evil.example.com/.run.app/"
-            )
-            .is_err());
-        }
-
-        #[test]
-        fn the_deployments_own_publisher_is_allowed() {
-            let host = "walrus-publisher-mainnet-oozmyfiqvq-ue.a.run.app";
-            assert!(
-                check_endpoint_url_against(&[], &format!("https://{host}")).is_err(),
-                "a Cloud Run host is not allowed on its own"
-            );
-            assert!(
-                check_endpoint_url_against(&deployed(&[host]), &format!("https://{host}")).is_ok(),
-                "the host this deployment is configured with is allowed"
-            );
-            // Deployment hosts match exactly, never as a suffix, so configuring
-            // one Cloud Run publisher does not open up every `*.run.app`.
-            assert!(check_endpoint_url_against(
-                &deployed(&[host]),
-                "https://someone-elses-service-uc.a.run.app"
-            )
-            .is_err());
-        }
-
-        #[test]
-        fn url_shape_is_restricted_even_for_allowed_hosts() {
-            let host = "https://publisher.walrus-testnet.walrus.space";
+        fn concatenation_breaking_shapes_are_refused() {
+            let host = "https://aggregator.walrus-testnet.walrus.space";
             for url in [
                 format!("{host}/#"),
-                format!("{host}/v1/blobs"),
                 format!("{host}?a=b"),
                 format!("{host}#frag"),
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], &url).is_err(),
+                    check_endpoint_url(&url).is_err(),
                     "expected {url} to be refused"
                 );
             }
-            // Credentials in the authority would point the request elsewhere
-            // while keeping an allowed host in the string.
-            assert!(check_endpoint_url_against(
-                &[],
-                "https://publisher.walrus-testnet.walrus.space@evil.example.com"
+            // Credentials put the real target on the right of the `@` while a
+            // plausible host sits on the left.
+            assert!(check_endpoint_url(
+                "https://aggregator.walrus-testnet.walrus.space@169.254.169.254"
             )
             .is_err());
         }
 
         #[test]
-        fn only_https_is_accepted() {
+        fn non_http_schemes_are_refused() {
             for url in [
-                "http://publisher.walrus-testnet.walrus.space",
                 "file:///etc/passwd",
-                "gopher://walrus.space:70/",
-                "ftp://walrus.space/",
+                "gopher://example.com:70/",
+                "ftp://example.com/",
             ] {
                 assert!(
-                    check_endpoint_url_against(&[], url).is_err(),
+                    check_endpoint_url(url).is_err(),
                     "expected {url} to be refused"
                 );
             }
         }
 
+        // --- endpoint policy: address classification ---
+
         #[test]
-        fn suffix_entries_match_subdomains_only_at_a_label_boundary() {
-            assert!(host_matches("example.com", ".example.com"));
-            assert!(host_matches("a.example.com", ".example.com"));
-            assert!(!host_matches("notexample.com", ".example.com"));
-            assert!(!host_matches("example.com.evil.com", ".example.com"));
-            assert!(host_matches("example.com", "example.com"));
-            assert!(!host_matches("a.example.com", "example.com"));
+        fn public_addresses_are_recognised() {
+            for addr in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111"] {
+                let ip: IpAddr = addr.parse().unwrap();
+                assert!(is_public_ip(ip), "expected {addr} to be public");
+            }
+        }
+
+        #[test]
+        fn non_public_ranges_are_recognised() {
+            for addr in [
+                "0.0.0.0",
+                "0.1.2.3",
+                "10.0.0.1",
+                "100.100.100.200",
+                "127.0.0.1",
+                "169.254.169.254",
+                "172.31.255.255",
+                "192.0.0.1",
+                "192.0.2.1",
+                "192.88.99.1",
+                "192.168.0.1",
+                "198.18.0.1",
+                "198.51.100.1",
+                "203.0.113.1",
+                "224.0.0.1",
+                "240.0.0.1",
+                "255.255.255.255",
+                "::",
+                "::1",
+                "fc00::1",
+                "fd12:3456::1",
+                "fe80::1",
+                "ff02::1",
+                "2001:db8::1",
+                "100::1",
+            ] {
+                let ip: IpAddr = addr.parse().unwrap();
+                assert!(!is_public_ip(ip), "expected {addr} to be non-public");
+            }
+        }
+
+        // --- endpoint policy: resolution ---
+
+        #[tokio::test]
+        async fn an_ip_literal_endpoint_needs_no_pin() {
+            assert_eq!(
+                resolve_public_endpoint("https://8.8.8.8").await.unwrap(),
+                None
+            );
+        }
+
+        #[tokio::test]
+        async fn a_name_resolving_to_a_private_address_is_refused() {
+            // localhost is the one name guaranteed to resolve to loopback
+            // everywhere; the shape being tested is a name with private records.
+            let err = resolve_public_endpoint("http://localhost:8080")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("not a public address"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn a_name_that_does_not_resolve_is_refused() {
+            let err = resolve_public_endpoint("https://no-such-host.invalid")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("did not resolve"), "{err}");
         }
 
         // --- upload path policy ---

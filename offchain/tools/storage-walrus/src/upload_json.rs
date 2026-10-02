@@ -3,7 +3,7 @@
 //! Standard Nexus Tool that uploads a JSON file to Walrus and returns the blob ID.
 
 use {
-    crate::client::WalrusConfig,
+    crate::{client::WalrusConfig, utils::validation::EndpointError},
     nexus_sdk::{
         fqn,
         walrus::{StorageInfo, WalrusError},
@@ -23,6 +23,8 @@ pub enum UploadJsonError {
     UploadError(#[from] WalrusError),
     #[error("Invalid JSON data: {0}")]
     InvalidJson(String),
+    #[error("Refused endpoint: {0}")]
+    Endpoint(#[from] EndpointError),
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -142,7 +144,9 @@ impl NexusTool for UploadJson {
             }
             Err(e) => {
                 let (kind, status_code) = match &e {
-                    UploadJsonError::InvalidJson(_) => (UploadErrorKind::Validation, None),
+                    UploadJsonError::InvalidJson(_) | UploadJsonError::Endpoint(_) => {
+                        (UploadErrorKind::Validation, None)
+                    }
                     UploadJsonError::UploadError(err) => {
                         let status_code = match err {
                             WalrusError::ApiError { status_code, .. } => Some(*status_code),
@@ -172,7 +176,7 @@ impl UploadJson {
             .with_publisher_url(input.publisher_url)
             .with_aggregator_url(input.aggregator_url)
             .build()
-            .await;
+            .await?;
 
         let storage_info = crate::client::with_publisher_retry(|| {
             walrus_client.upload_json(&input.json, input.epochs, input.send_to_address.clone())
@@ -268,8 +272,10 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();
@@ -362,8 +368,10 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();
@@ -447,8 +455,10 @@ mod tests {
         let walrus_client = WalrusConfig::new()
             .with_publisher_url(Some(server.url()))
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = UploadJson::with_custom_client();

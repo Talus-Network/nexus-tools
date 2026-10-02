@@ -3,7 +3,10 @@
 //! Standard Nexus Tool that reads a file from Walrus and returns the contents.
 
 use {
-    crate::client::WalrusConfig,
+    crate::{
+        client::{TargetPolicy, WalrusConfig},
+        utils::validation::EndpointError,
+    },
     nexus_sdk::{fqn, walrus::WalrusError, ToolFqn},
     nexus_toolkit::*,
     schemars::JsonSchema,
@@ -17,6 +20,8 @@ use {
 pub enum ReadFileError {
     #[error("Failed to read file: {0}")]
     ReadError(#[from] WalrusError),
+    #[error("Refused endpoint: {0}")]
+    Endpoint(#[from] EndpointError),
 }
 
 /// Types of errors that can occur during file read
@@ -57,7 +62,12 @@ pub(crate) enum Output {
     },
 }
 
-pub(crate) struct ReadFile;
+pub(crate) struct ReadFile {
+    /// Which targets a caller-supplied `aggregator_url` may resolve to. Always
+    /// [`TargetPolicy::PublicOnly`] in the deployed tool; the tests relax it so
+    /// they can point at a mock server on the loopback interface.
+    target_policy: TargetPolicy,
+}
 
 impl NexusTool for ReadFile {
     type Input = Input;
@@ -68,7 +78,9 @@ impl NexusTool for ReadFile {
     }
 
     async fn new() -> Self {
-        Self {}
+        Self {
+            target_policy: TargetPolicy::default(),
+        }
     }
 
     fn fqn() -> ToolFqn {
@@ -103,6 +115,7 @@ impl NexusTool for ReadFile {
 
                         (ReadErrorKind::Network, status_code)
                     }
+                    ReadFileError::Endpoint(_) => (ReadErrorKind::Network, None),
                 };
 
                 Output::Err {
@@ -119,8 +132,9 @@ impl ReadFile {
     async fn read_file(&self, input: Input) -> Result<Vec<u8>, ReadFileError> {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(input.aggregator_url)
+            .with_target_policy(self.target_policy)
             .build()
-            .await;
+            .await?;
 
         let _contents = walrus_client.read_file(&input.blob_id).await?;
 
@@ -135,7 +149,9 @@ mod tests {
     impl ReadFile {
         // Helper method for testing
         fn with_custom_client() -> Self {
-            Self {}
+            Self {
+                target_policy: TargetPolicy::Unrestricted,
+            }
         }
 
         async fn read_for_test(
@@ -183,8 +199,10 @@ mod tests {
         // Create a client that points to our mock server
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();
@@ -217,8 +235,10 @@ mod tests {
 
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();
@@ -254,8 +274,10 @@ mod tests {
 
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(Some(server.url()))
+            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
             .build()
-            .await;
+            .await
+            .expect("test endpoints are unrestricted");
 
         // Call the tool with our test client
         let tool = ReadFile::with_custom_client();
