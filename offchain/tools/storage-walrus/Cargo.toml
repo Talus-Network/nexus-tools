@@ -24,7 +24,6 @@ tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 reqwest.workspace = true
-jsonschema.workspace = true
 
 # === Nexus deps ===
 nexus-toolkit.workspace = true

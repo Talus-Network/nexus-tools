@@ -100,7 +100,9 @@ impl TryFrom<Message> for ChatCompletionRequestMessage {
 
                 message.content(value).build().map(Into::into)
             }
-            _ => unimplemented!("Tool and Function roles are not supported"),
+            MessageKind::Tool | MessageKind::Function => Err(OpenAIError::InvalidArgument(
+                "Tool and Function message roles are not supported".to_string(),
+            )),
         }
     }
 }
@@ -286,6 +288,19 @@ impl NexusTool for OpenaiChatCompletion {
 
     /// Invokes the tool logic to generate a chat completion.
     async fn invoke(&self, request: Self::Input) -> Self::Output {
+        let validator = match request
+            .json_schema
+            .as_ref()
+            .map(|schema| nexus_toolkit::schema::compile(schema.schema.as_value()))
+            .transpose()
+        {
+            Ok(validator) => validator,
+            Err(error) => {
+                return Output::Err {
+                    reason: error.to_string(),
+                }
+            }
+        };
         let cfg = OpenAIConfig::new()
             .with_api_key(&*request.api_key)
             .with_api_base(&self.api_base);
@@ -385,7 +400,7 @@ impl NexusTool for OpenaiChatCompletion {
         };
 
         // Plain text completion.
-        let Some(OpenAIJsonSchema { schema, .. }) = request.json_schema else {
+        let Some(validator) = validator else {
             return Output::Text {
                 id: response.id,
                 role: choice.message.role.into(),
@@ -404,7 +419,7 @@ impl NexusTool for OpenaiChatCompletion {
             }
         };
 
-        match jsonschema::draft202012::validate(&schema.to_value(), &completion) {
+        match validator.validate(&completion) {
             Ok(()) => Output::Json {
                 id: response.id,
                 role: choice.message.role.into(),
@@ -427,6 +442,18 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_roles_return_errors() {
+        for role in [MessageKind::Tool, MessageKind::Function] {
+            let message = Message::Full {
+                role,
+                name: None,
+                value: "hello".into(),
+            };
+            assert!(ChatCompletionRequestMessage::try_from(message).is_err());
+        }
+    }
+
     use {
         super::*,
         mockito::{Matcher, Server},
@@ -762,6 +789,30 @@ mod tests {
         );
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn unsafe_schemas_are_rejected_before_calling_the_api() {
+        let (mut server, tool) = create_server_and_tool().await;
+        let api = server
+            .mock("POST", "/v1/chat/completions")
+            .expect(0)
+            .create_async()
+            .await;
+        for schema in [
+            json!({"$ref": "file:///unused-private-schema.json"}),
+            json!({"type": 42}),
+        ] {
+            let input = serde_json::from_value(json!({
+                "api_key": "harmless-test-key", "prompt": "Hello",
+                "json_schema": {"name": "test", "schema": schema}
+            }))
+            .unwrap();
+            assert!(
+                matches!(tool.invoke(input).await, Output::Err { reason } if reason == "Invalid JSON schema; external references are disabled")
+            );
+        }
+        api.assert_async().await;
     }
 
     #[tokio::test]

@@ -22,7 +22,7 @@ pub(crate) fn validate_schema_detailed(
 
     // Validate using jsonschema
     let validator =
-        jsonschema::validator_for(&schema_value).map_err(|e| SchemaValidationDetails {
+        nexus_toolkit::schema::compile(&schema_value).map_err(|e| SchemaValidationDetails {
             name: schema_def.name.clone(),
             description: schema_def.description.clone(),
             strict: schema_def.strict,
@@ -52,5 +52,23 @@ pub(crate) fn validate_schema_detailed(
                 errors: error_messages,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn external_schema_references_return_a_sanitized_error() {
+        let schema: HttpJsonSchema = serde_json::from_value(serde_json::json!({
+            "name": "test", "schema": {"$ref": "file:///unused.json#/secret"}
+        }))
+        .unwrap();
+        let error = validate_schema_detailed(&schema, &serde_json::json!({})).unwrap_err();
+        assert!(error
+            .errors
+            .iter()
+            .all(|error| !error.contains("unused.json")));
+        assert!(!error.valid);
     }
 }

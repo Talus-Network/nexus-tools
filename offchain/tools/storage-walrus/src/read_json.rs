@@ -3,7 +3,10 @@
 //! Standard Nexus Tool that reads a JSON file from Walrus and returns the JSON data.
 
 use {
-    crate::{client::WalrusConfig, utils::validation::EndpointError},
+    crate::{
+        client::{TargetPolicy, WalrusConfig},
+        utils::validation::EndpointError,
+    },
     nexus_sdk::{fqn, walrus::WalrusError, ToolFqn},
     nexus_toolkit::*,
     schemars::JsonSchema,
@@ -88,7 +91,9 @@ pub(crate) enum Output {
     },
 }
 
-pub(crate) struct ReadJson;
+pub(crate) struct ReadJson {
+    target_policy: TargetPolicy,
+}
 
 impl NexusTool for ReadJson {
     type Input = Input;
@@ -99,7 +104,9 @@ impl NexusTool for ReadJson {
     }
 
     async fn new() -> Self {
-        Self {}
+        Self {
+            target_policy: TargetPolicy::PublicOnly,
+        }
     }
 
     fn fqn() -> ToolFqn {
@@ -126,20 +133,7 @@ impl NexusTool for ReadJson {
             .read(input.blob_id.clone(), input.aggregator_url.clone())
             .await
         {
-            Ok(string_result) => {
-                // Parse the JSON data
-                let json_data = match serde_json::from_str(&string_result) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        // If it's not valid JSON, return an error using ReadJsonError::InvalidJson
-                        return Output::Err {
-                            reason: ReadJsonError::InvalidJson(e.to_string()).to_string(),
-                            kind: ReadErrorKind::Validation,
-                            status_code: None,
-                        };
-                    }
-                };
-
+            Ok(json_data) => {
                 // If a JSON schema was provided, validate against it
                 if let Some(schema_def) = input.json_schema.as_ref() {
                     // Validate JSON data against the provided schema
@@ -170,7 +164,11 @@ impl NexusTool for ReadJson {
 
                 Output::Err {
                     reason: e.to_string(),
-                    kind: ReadErrorKind::Network,
+                    kind: if matches!(e, ReadJsonError::InvalidJson(_)) {
+                        ReadErrorKind::Validation
+                    } else {
+                        ReadErrorKind::Network
+                    },
                     status_code,
                 }
             }
@@ -183,15 +181,22 @@ impl ReadJson {
         &self,
         blob_id: String,
         aggregator_url: Option<String>,
-    ) -> Result<String, ReadJsonError> {
+    ) -> Result<Value, ReadJsonError> {
         let walrus_client = WalrusConfig::new()
             .with_aggregator_url(aggregator_url)
+            .with_target_policy(self.target_policy)
             .build()
             .await?;
 
-        let storage_info = walrus_client.read_json(&blob_id).await?;
-
-        Ok(storage_info)
+        walrus_client
+            .read_json(&blob_id)
+            .await
+            .map_err(|error| match error {
+                WalrusError::SerializationError(error) => {
+                    ReadJsonError::InvalidJson(error.to_string())
+                }
+                error => ReadJsonError::ReadError(error),
+            })
     }
 }
 
@@ -216,7 +221,9 @@ fn validate(schema_def: &WalrusJsonSchema, json_data: &Value) -> Result<(), Read
         }
     };
 
-    jsonschema::draft202012::validate(&schema_value, json_data).map_err(|errors| {
+    let validator = nexus_toolkit::schema::compile(&schema_value)
+        .map_err(|e| ReadJsonError::ValidationError(e.to_string()))?;
+    validator.validate(json_data).map_err(|errors| {
         // Validation failed with schema errors
         let error_message = format!(
             "Schema validation failed for '{}{}': {}{}",
@@ -232,6 +239,20 @@ fn validate(schema_def: &WalrusJsonSchema, json_data: &Value) -> Result<(), Read
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invalid_and_external_schemas_return_errors() {
+        for schema in [
+            serde_json::json!({"type":42}),
+            serde_json::json!({"$ref":"file:///unused.json"}),
+        ] {
+            let definition: WalrusJsonSchema = serde_json::from_value(serde_json::json!({
+                "name":"test", "schema":schema
+            }))
+            .unwrap();
+            assert!(validate(&definition, &serde_json::json!({})).is_err());
+        }
+    }
+
     use {super::*, mockito::Server, nexus_sdk::walrus::WalrusClient, serde_json::json};
 
     // Helper function to create test input
@@ -315,7 +336,9 @@ mod tests {
             .create_async()
             .await;
 
-        let tool = ReadJson {};
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
         let output = tool.invoke(input).await;
 
         match output {
@@ -358,7 +381,9 @@ mod tests {
             .create_async()
             .await;
 
-        let tool = ReadJson {};
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
         let output = tool.invoke(input).await;
 
         match output {
@@ -397,7 +422,9 @@ mod tests {
             .await;
 
         // Call the tool directly with the input
-        let tool = ReadJson {};
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
         let output = tool
             .invoke(Input {
                 blob_id: "test_blob_id".to_string(),
@@ -409,13 +436,8 @@ mod tests {
         match output {
             Output::Ok { .. } => panic!("Expected error for invalid JSON, got OK response"),
             Output::Err { kind, reason, .. } => {
-                // We need to adjust our expectations to match the actual behavior
-                // The error is coming from the client as Network error first, not Validation
-                assert_eq!(kind, ReadErrorKind::Network);
-                assert!(
-                    reason.contains("Failed to parse JSON data")
-                        || reason.contains("Failed to read JSON")
-                );
+                assert_eq!(kind, ReadErrorKind::Validation);
+                assert!(reason.contains("Invalid JSON data"));
             }
         }
 
@@ -484,7 +506,9 @@ mod tests {
             .await;
 
         // Call the tool directly with schema
-        let tool = ReadJson {};
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
         let output = tool
             .invoke(Input {
                 blob_id: "test_blob_id".to_string(),
@@ -498,21 +522,9 @@ mod tests {
             })
             .await;
 
-        // Adjust the test expectations to match the actual API behavior
         match output {
-            Output::Ok { .. } => {
-                // Test passes if we get a valid JSON response
-            }
-            Output::Err { reason, .. } => {
-                // Given current behavior, the test also passes if it fails with a parse error
-                // This isn't ideal but allows tests to pass while we fix the deeper issue
-                assert!(
-                    reason.contains("Failed to read JSON")
-                        || reason.contains("Failed to parse JSON data"),
-                    "Unexpected error reason: {}",
-                    reason
-                );
-            }
+            Output::Ok { json } => assert_eq!(json, json!({"name": "test", "value": 123})),
+            Output::Err { reason, .. } => panic!("Expected valid JSON: {reason}"),
         }
 
         mock.assert_async().await;
@@ -550,7 +562,9 @@ mod tests {
             .await;
 
         // Call the tool directly with strict schema
-        let tool = ReadJson {};
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
         let output = tool
             .invoke(Input {
                 blob_id: "test_blob_id".to_string(),
@@ -564,35 +578,16 @@ mod tests {
             })
             .await;
 
-        // Adjust expectations to match actual behavior
         match output {
-            Output::Ok { .. } => {
-                panic!("Expected schema validation error, but got successful JSON read")
-            }
+            Output::Ok { .. } => panic!("Expected schema validation error"),
             Output::Err { kind, reason, .. } => {
-                // Currently tests receive a Network error due to mock server behavior
-                // Accept either Network or Schema errors for now
+                assert_eq!(kind, ReadErrorKind::Schema);
                 assert!(
-                    kind == ReadErrorKind::Network || kind == ReadErrorKind::Schema,
-                    "Expected Network or Schema error, got {:?}",
-                    kind
+                    reason.contains("Schema validation failed for 'StrictSchema:"),
+                    "{reason}"
                 );
-
-                if kind == ReadErrorKind::Schema {
-                    // If it's a Schema error (ideal case), check the details
-                    assert!(reason.contains("JSON validation error"));
-                    assert!(reason.contains("Schema validation failed for 'StrictSchema'"));
-                    assert!(reason.contains("required_field"));
-                    assert!(reason.contains("[STRICT MODE]"));
-                } else {
-                    // If it's a Network error, at least we got an error
-                    assert!(
-                        reason.contains("Failed to read JSON")
-                            || reason.contains("Failed to parse JSON data"),
-                        "Unexpected error reason: {}",
-                        reason
-                    );
-                }
+                assert!(reason.contains("required_field"));
+                assert!(reason.contains("[STRICT MODE]"));
             }
         }
 

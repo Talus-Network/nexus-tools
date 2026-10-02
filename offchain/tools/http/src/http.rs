@@ -297,8 +297,8 @@ impl Http {
         if response.status().is_client_error() || response.status().is_server_error() {
             let reason_phrase = response.status().canonical_reason().unwrap_or("");
             let body = response.text().await.unwrap_or_default();
-            let snippet = if body.len() > 200 {
-                format!("{}...", &body[..200])
+            let snippet = if let Some((boundary, _)) = body.char_indices().nth(200) {
+                format!("{}...", &body[..boundary])
             } else {
                 body
             };
@@ -456,6 +456,32 @@ impl Http {
 #[cfg(test)]
 mod tests {
     use {super::*, mockito::Server};
+
+    #[tokio::test]
+    async fn unicode_error_bodies_do_not_panic_at_the_snippet_boundary() {
+        let (mut server, tool) = create_server_and_tool().await;
+        let response = server
+            .mock("GET", "/error")
+            .with_status(500)
+            .with_body(format!("{}éZ", "a".repeat(199)))
+            .create_async()
+            .await;
+        let input = Input {
+            method: HttpMethod::Get,
+            url: UrlInput::FullUrl(format!("{}/error", server.url())),
+            headers: None,
+            query: None,
+            auth: None,
+            body: None,
+            expect_json: None,
+            json_schema: None,
+            timeout_ms: None,
+            retries: None,
+            follow_redirects: None,
+        };
+        assert!(matches!(tool.invoke(input).await, Output::Err { .. }));
+        response.assert_async().await;
+    }
 
     /// Helper function to create a mock server and HTTP tool for testing
     async fn create_server_and_tool() -> (mockito::ServerGuard, Http) {

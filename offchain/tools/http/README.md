@@ -153,3 +153,15 @@ An error occurred during the request.
 - **`err_input`** - Input validation error
 - **`err_url_parse`** - URL parsing error
 - **`err_base64_decode`** - Base64 decoding error
+
+### Destination and schema restrictions
+
+Caller destinations must use HTTP or HTTPS and resolve exclusively to public
+addresses. Private addresses, internal names, embedded URL credentials, and
+redirects to private destinations are refused. Connections use the DNS answers
+that passed validation; environment proxies are disabled. Request timeouts are
+limited to 30 seconds.
+
+JSON schemas may reference definitions within the supplied document. File and
+network references are disabled, and schema compilation errors do not expose
+referenced values.

@@ -31,14 +31,22 @@ impl HttpClient {
         timeout_ms: Option<u64>,
         follow_redirects: Option<bool>,
     ) -> Result<Self, HttpToolError> {
+        #[cfg(not(test))]
+        let mut builder =
+            nexus_toolkit::network::public_client_builder(follow_redirects.unwrap_or(false));
+        // Unit tests use local mock endpoints. The shared transport policy has
+        // its own tests with the production restrictions enabled.
+        #[cfg(test)]
         let mut builder = Client::builder();
 
         // Set timeout with default (5 seconds = 5000ms)
-        let timeout_ms = timeout_ms.unwrap_or(5000);
+        let timeout_ms = timeout_ms.unwrap_or(5000).clamp(1, 30_000);
         builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
 
         // Set redirect policy with default (don't follow redirects, following curl's philosophy)
+        #[cfg(test)]
         let follow_redirects = follow_redirects.unwrap_or(false);
+        #[cfg(test)]
         if follow_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::limited(3));
         } else {
@@ -63,16 +71,9 @@ impl HttpClient {
             }
         };
 
-        // Block localhost and 127.0.0.1 for security (skip in test environment)
         #[cfg(not(test))]
-        if let Some(host) = url.host_str() {
-            if host == "localhost" || host == "127.0.0.1" {
-                return Err(HttpToolError::ErrInput(
-                    "Requests to localhost and 127.0.0.1 are not allowed for security reasons"
-                        .to_string(),
-                ));
-            }
-        }
+        nexus_toolkit::network::validate_public_url(&url)
+            .map_err(|message| HttpToolError::ErrInput(message.to_string()))?;
 
         Ok(url)
     }
