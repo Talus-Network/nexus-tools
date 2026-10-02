@@ -247,11 +247,18 @@ enum Output {
     },
 }
 
-/// The OpenAI Chat Completion tool.
-///
-/// This struct implements the `NexusTool` trait to integrate with the Nexus
-/// framework. It provides the logic for invoking the OpenAI chat completion
-/// API.
+struct DenyExternalReferences;
+
+impl jsonschema::Retrieve for DenyExternalReferences {
+    fn retrieve(
+        &self,
+        _: &jsonschema::Uri<String>,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err("external schema references are disabled".into())
+    }
+}
+
+/// Implements the Nexus tool for the OpenAI chat completion API.
 struct OpenaiChatCompletion {
     api_base: String,
 }
@@ -291,13 +298,18 @@ impl NexusTool for OpenaiChatCompletion {
         let validator = match request
             .json_schema
             .as_ref()
-            .map(|schema| nexus_toolkit::schema::compile(schema.schema.as_value()))
+            .map(|schema| {
+                // Explicitly deny retrieval even if another dependency enables it.
+                jsonschema::options()
+                    .with_retriever(DenyExternalReferences)
+                    .build(schema.schema.as_value())
+            })
             .transpose()
         {
             Ok(validator) => validator,
-            Err(error) => {
+            Err(_) => {
                 return Output::Err {
-                    reason: error.to_string(),
+                    reason: "Invalid JSON schema; external references are disabled".to_string(),
                 }
             }
         };
@@ -794,14 +806,25 @@ mod tests {
     #[tokio::test]
     async fn unsafe_schemas_are_rejected_before_calling_the_api() {
         let (mut server, tool) = create_server_and_tool().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("private-schema.json");
+        std::fs::write(&file, "true").unwrap();
+        let remote = server
+            .mock("GET", "/schema")
+            .with_body("true")
+            .expect(0)
+            .create_async()
+            .await;
         let api = server
             .mock("POST", "/v1/chat/completions")
             .expect(0)
             .create_async()
             .await;
         for schema in [
-            json!({"$ref": "file:///unused-private-schema.json"}),
+            json!({"$ref": reqwest::Url::from_file_path(&file).unwrap().as_str()}),
+            json!({"$ref": format!("{}/schema", server.url())}),
             json!({"type": 42}),
+            json!({"type": "PRIVATE_TEST_MARKER"}),
         ] {
             let input = serde_json::from_value(json!({
                 "api_key": "harmless-test-key", "prompt": "Hello",
@@ -813,6 +836,7 @@ mod tests {
             );
         }
         api.assert_async().await;
+        remote.assert_async().await;
     }
 
     #[tokio::test]
@@ -883,8 +907,11 @@ mod tests {
         mock.assert_async().await;
     }
 
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
     #[tokio::test]
-    async fn test_json_output() {
+    async fn test_json_output(#[case] internal_reference: bool) {
         let (mut server, tool) = create_server_and_tool().await;
 
         #[derive(PartialEq, Eq, Serialize, JsonSchema)]
@@ -893,7 +920,12 @@ mod tests {
             world: String,
         }
 
-        let schema = schema_for!(Completion);
+        let schema = serde_json::to_value(schema_for!(Completion)).unwrap();
+        let schema = if internal_reference {
+            json!({"$defs": {"completion": schema}, "$ref": "#/$defs/completion"})
+        } else {
+            schema
+        };
 
         let json = json!({
             "api_key": "your_api_key",

@@ -200,6 +200,17 @@ impl ReadJson {
     }
 }
 
+struct DenyExternalReferences;
+
+impl jsonschema::Retrieve for DenyExternalReferences {
+    fn retrieve(
+        &self,
+        _: &jsonschema::Uri<String>,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err("external schema references are disabled".into())
+    }
+}
+
 fn validate(schema_def: &WalrusJsonSchema, json_data: &Value) -> Result<(), ReadJsonError> {
     // Extract the schema settings, using all fields
     let schema_name = &schema_def.name;
@@ -210,19 +221,15 @@ fn validate(schema_def: &WalrusJsonSchema, json_data: &Value) -> Result<(), Read
         .unwrap_or_default();
     let strict_mode = schema_def.strict.unwrap_or(false);
 
-    // Convert schema to JSON value for validation
-    let schema_value = match serde_json::to_value(&schema_def.schema) {
-        Ok(val) => val,
-        Err(e) => {
-            return Err(ReadJsonError::ValidationError(format!(
-                "Schema serialization error: {}",
-                e
-            )));
-        }
-    };
-
-    let validator = nexus_toolkit::schema::compile(&schema_value)
-        .map_err(|e| ReadJsonError::ValidationError(e.to_string()))?;
+    // Explicitly deny retrieval even if another dependency enables it.
+    let validator = jsonschema::options()
+        .with_retriever(DenyExternalReferences)
+        .build(schema_def.schema.as_value())
+        .map_err(|_| {
+            ReadJsonError::ValidationError(
+                "Invalid JSON schema; external references are disabled".to_string(),
+            )
+        })?;
     validator.validate(json_data).map_err(|errors| {
         // Validation failed with schema errors
         let error_message = format!(
@@ -239,18 +246,47 @@ fn validate(schema_def: &WalrusJsonSchema, json_data: &Value) -> Result<(), Read
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn invalid_and_external_schemas_return_errors() {
+    #[tokio::test]
+    async fn invalid_and_external_schemas_return_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("private-schema.json");
+        std::fs::write(&file, "true").unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let remote = server
+            .mock("GET", "/schema")
+            .with_body("true")
+            .expect(0)
+            .create_async()
+            .await;
         for schema in [
             serde_json::json!({"type":42}),
-            serde_json::json!({"$ref":"file:///unused.json"}),
+            serde_json::json!({"type":"PRIVATE_TEST_MARKER"}),
+            serde_json::json!({"$ref":reqwest::Url::from_file_path(&file).unwrap().as_str()}),
+            serde_json::json!({"$ref":format!("{}/schema", server.url())}),
         ] {
             let definition: WalrusJsonSchema = serde_json::from_value(serde_json::json!({
                 "name":"test", "schema":schema
             }))
             .unwrap();
-            assert!(validate(&definition, &serde_json::json!({})).is_err());
+            let error = validate(&definition, &serde_json::json!({})).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "JSON validation error: Invalid JSON schema; external references are disabled"
+            );
         }
+        remote.assert_async().await;
+    }
+
+    #[test]
+    fn schema_references_within_the_document_work() {
+        let definition: WalrusJsonSchema = serde_json::from_value(serde_json::json!({
+            "name": "test", "schema": {
+                "$defs": {"value": {"type": "integer"}}, "$ref": "#/$defs/value"
+            }
+        }))
+        .unwrap();
+        assert!(validate(&definition, &serde_json::json!(42)).is_ok());
+        assert!(validate(&definition, &serde_json::json!("42")).is_err());
     }
 
     use {super::*, mockito::Server, nexus_sdk::walrus::WalrusClient, serde_json::json};

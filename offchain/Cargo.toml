@@ -21,6 +21,7 @@ dotenvy = "0.15.7"
 ed25519-dalek = "2.2.0"
 env_logger = "0.11.10"
 hex = "0.4.3"
+jsonschema = { version = "0.46.10", default-features = false }
 sha2 = "0.11.0"
 chrono = { version = "0.4.44", features = ["serde"] }
 log = "0.4.29"
@@ -48,13 +49,13 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # For local dev convenience
 # path = "../../nexus-sdk/sdk"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "aa9f3977a1995bfb68eb694cb3fb5d7126110ba1"
+rev = "a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8"
 
 [workspace.dependencies.nexus-toolkit]
 # For local dev convenience
 # path = "../../nexus-sdk/toolkit-rust"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "aa9f3977a1995bfb68eb694cb3fb5d7126110ba1"
+rev = "a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8"
 
 
 [profile.release]

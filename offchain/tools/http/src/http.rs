@@ -192,7 +192,7 @@ pub(crate) enum Output {
 
 /// HTTP Generic tool implementation
 pub(crate) struct Http {
-    destination_policy: nexus_toolkit::network::DestinationPolicy,
+    destination_policy: crate::network::DestinationPolicy,
 }
 
 impl NexusTool for Http {
@@ -201,7 +201,7 @@ impl NexusTool for Http {
 
     async fn new() -> Self {
         Self {
-            destination_policy: nexus_toolkit::network::DestinationPolicy::Public,
+            destination_policy: crate::network::DestinationPolicy::Public,
         }
     }
 
@@ -517,7 +517,7 @@ mod tests {
     async fn create_server_and_tool() -> (mockito::ServerGuard, Http) {
         let server = Server::new_async().await;
         let tool = Http {
-            destination_policy: nexus_toolkit::network::DestinationPolicy::Origin(
+            destination_policy: crate::network::DestinationPolicy::Origin(
                 reqwest::Url::parse(&server.url()).unwrap(),
             ),
         };

@@ -6,10 +6,10 @@ use {
     crate::{
         errors::HttpToolError,
         models::{AuthConfig, HttpMethod, RequestBody, UrlInput},
+        network::{Client, DestinationPolicy, Error as NetworkError},
     },
     backon::{ExponentialBuilder, Retryable},
     base64::Engine,
-    nexus_toolkit::network::{Client, DestinationPolicy, Error as NetworkError},
     reqwest::{multipart::Form, Method},
     std::collections::HashMap,
     url::Url,

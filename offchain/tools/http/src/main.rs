@@ -6,6 +6,7 @@ mod errors;
 mod http;
 mod http_client;
 mod models;
+mod network;
 mod utils;
 
 #[tokio::main]

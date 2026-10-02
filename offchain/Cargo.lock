@@ -1353,6 +1353,7 @@ version = "2.0.0"
 dependencies = [
  "backon",
  "base64 0.22.1",
+ "jsonschema",
  "mockito",
  "nexus-sdk",
  "nexus-toolkit",
@@ -1360,6 +1361,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -1870,6 +1872,7 @@ dependencies = [
  "anyhow",
  "async-openai",
  "chrono",
+ "jsonschema",
  "log",
  "mockito",
  "nexus-sdk",
@@ -1883,6 +1886,7 @@ dependencies = [
  "serial_test",
  "strum",
  "strum_macros",
+ "tempfile",
  "tokio",
  "toml",
 ]
@@ -2071,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "nexus-sdk"
 version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=aa9f3977a1995bfb68eb694cb3fb5d7126110ba1#aa9f3977a1995bfb68eb694cb3fb5d7126110ba1"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8#a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -2110,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "nexus-toolkit"
 version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=aa9f3977a1995bfb68eb694cb3fb5d7126110ba1#aa9f3977a1995bfb68eb694cb3fb5d7126110ba1"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8#a71a23d24e30fc3bccdff66b40de8c9b6f0fedf8"
 dependencies = [
  "anyhow",
  "bcs",
@@ -2120,7 +2124,6 @@ dependencies = [
  "futures",
  "hex",
  "hyper-util",
- "jsonschema",
  "log",
  "nexus-sdk",
  "notify",
@@ -4155,6 +4158,7 @@ name = "walrus"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "jsonschema",
  "mockito",
  "nexus-sdk",
  "nexus-toolkit",
@@ -4162,6 +4166,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",

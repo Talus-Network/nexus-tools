@@ -16,11 +16,10 @@
 
 pub mod validation {
     use {
-        nexus_toolkit::network::{is_public_ip, validate_public_url},
         reqwest::Url,
         serde::{de, Deserialize, Deserializer},
         std::{
-            net::{IpAddr, SocketAddr},
+            net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
             path::{Component, Path, PathBuf},
             time::Duration,
         },
@@ -92,7 +91,112 @@ pub mod validation {
             ));
         }
 
-        validate_public_url(&url).map_err(|error| EndpointError(error.to_string()))
+        let host = url
+            .host_str()
+            .ok_or_else(|| EndpointError("endpoint must have a host".to_string()))?;
+        check_endpoint_host(host).map_err(|error| EndpointError(error.to_string()))
+    }
+
+    fn check_endpoint_host(host: &str) -> Result<(), &'static str> {
+        if let Some(ip) = host_as_ip(host) {
+            return if is_public_ip(ip) {
+                Ok(())
+            } else {
+                Err("Private destinations are disabled")
+            };
+        }
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        // Names without a dot use DNS search domains and can reach metadata services.
+        if !host.contains('.')
+            || [".internal", ".local", ".localhost", ".arpa"]
+                .iter()
+                .any(|suffix| host.ends_with(suffix))
+        {
+            return Err("Private destinations are disabled");
+        }
+        Ok(())
+    }
+
+    /// Whether an address is permitted by the public destination policy.
+    /// Special purpose ranges are conservatively excluded.
+    fn is_public_ip(addr: IpAddr) -> bool {
+        match addr {
+            IpAddr::V4(ip) => is_public_ipv4(ip),
+            IpAddr::V6(ip) => is_public_ipv6(ip),
+        }
+    }
+
+    fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+        let o = ip.octets();
+        !(ip.is_loopback()
+            || ip.is_private()
+            // 169.254.0.0/16 link-local, where every cloud metadata server lives
+            || ip.is_link_local()
+            || ip.is_multicast()
+            || ip.is_documentation()
+            // 0.0.0.0/8 "this network", which includes the unspecified address
+            || o[0] == 0
+            // 100.64.0.0/10 carrier-grade NAT
+            || (o[0] == 100 && (o[1] & 0xc0) == 64)
+            // 192.0.0.0/24 IETF protocol assignments
+            || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+            // 192.88.99.0/24 former 6to4 relay anycast
+            || (o[0] == 192 && o[1] == 88 && o[2] == 99)
+            // 198.18.0.0/15 benchmarking
+            || (o[0] == 198 && (o[1] & 0xfe) == 18)
+            // 240.0.0.0/4 reserved, up to and including the broadcast address
+            || o[0] >= 240)
+    }
+
+    fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+        // A v6 address carrying a v4 one reaches that v4 address, so the v4
+        // ranges are what decide.
+        if let Some(v4) = embedded_ipv4(ip) {
+            return is_public_ipv4(v4);
+        }
+
+        let s = ip.segments();
+        // Limit native IPv6 to global unicast, excluding special purpose ranges.
+        // https://www.iana.org/assignments/iana-ipv6-special-registry/
+        if (s[0] & 0xe000) != 0x2000 {
+            return false;
+        }
+        // 2001::/23 protocol assignments, including Teredo and benchmarking
+        !((s[0] == 0x2001 && s[1] < 0x0200)
+            // 2001:db8::/32 documentation
+            || (s[0] == 0x2001 && s[1] == 0x0db8)
+            // 3fff::/20 documentation
+            || (s[0] == 0x3fff && (s[1] & 0xf000) == 0))
+    }
+
+    /// The v4 address a v6 address stands in for, across the mapped, compatible,
+    /// 6to4 and NAT64 forms.
+    fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+        // Both ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible).
+        if let Some(v4) = ip.to_ipv4() {
+            return Some(v4);
+        }
+
+        let s = ip.segments();
+        let embedded = |hi: u16, lo: u16| {
+            Ipv4Addr::new(
+                (hi >> 8) as u8,
+                (hi & 0xff) as u8,
+                (lo >> 8) as u8,
+                (lo & 0xff) as u8,
+            )
+        };
+
+        // 2002::/16 6to4
+        if s[0] == 0x2002 {
+            return Some(embedded(s[1], s[2]));
+        }
+        // 64:ff9b::/96 NAT64
+        if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+            return Some(embedded(s[6], s[7]));
+        }
+
+        None
     }
 
     /// Resolve `raw`'s host, refusing it unless every address it answers with is
@@ -365,6 +469,15 @@ pub mod validation {
                 "ff02::1",
                 "2001:db8::1",
                 "100::1",
+                "fec0::1",
+                "64:ff9b:1::a9fe:a9fe",
+                "2001::1",
+                "2001:2::1",
+                "3fff::1",
+                "5f00::1",
+                "64:ff9b::a9fe:a9fe",
+                "2002:a9fe:a9fe::1",
+                "::ffff:169.254.169.254",
             ] {
                 let ip: IpAddr = addr.parse().unwrap();
                 assert!(!is_public_ip(ip), "expected {addr} to be non-public");
