@@ -595,10 +595,13 @@ mod tests {
     #[test]
     fn private_publishers_fail_input_deserialization() {
         for publisher_url in [
+            "https://169.254.169.254/",
+            "https://metadata.google.internal",
+            "https://127.0.0.1:8080",
+            "https://metadata/computeMetadata/v1/",
+            // The 2026-09-30 probes, verbatim.
             "http://169.254.169.254/#",
             "http://metadata.google.internal/#",
-            "http://127.0.0.1:8080",
-            "http://metadata/computeMetadata/v1/",
         ] {
             let json = json!({ "file_path": "x", "publisher_url": publisher_url });
             assert!(
@@ -613,7 +616,7 @@ mod tests {
         for publisher_url in [
             "https://publisher.walrus-testnet.walrus.space",
             "https://walrus-mainnet-publisher-1.staketab.org",
-            "http://walrus-testnet.suicore.com",
+            "https://walrus.example.com:9000",
         ] {
             let json = json!({ "file_path": "x", "publisher_url": publisher_url });
             assert!(

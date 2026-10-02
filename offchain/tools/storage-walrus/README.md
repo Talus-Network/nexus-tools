@@ -10,11 +10,11 @@ The JSON data to upload.
 
 _opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus publisher URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus publisher URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus aggregator URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 _opt_ **`epochs`: [`u64`]** _default_: [`1`]
 
@@ -67,7 +67,7 @@ The path of the file to upload, relative to `WALRUS_UPLOAD_ROOT`. Uploading from
 
 _opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus publisher URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus publisher URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 _opt_ **`epochs`: [`u64`]** _default_: [`1`]
 
@@ -117,7 +117,7 @@ The blob ID of the JSON file to read.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus aggregator URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 _opt_ **`json_schema`: [`Option<WalrusJsonSchema>`]** _default_: [`None`]
 
@@ -164,7 +164,7 @@ The unique identifier of the blob to read.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus aggregator URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 ## Output Variants & Ports
 
@@ -198,7 +198,7 @@ The ID of the blob to verify.
 
 _opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
 
-The Walrus aggregator URL. Must be a public `http`/`https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
+The Walrus aggregator URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
 
 ## Output Variants & Ports
 
@@ -231,11 +231,10 @@ An error occurred during verification.
 ## Endpoint targets
 
 `publisher_url` and `aggregator_url` are caller-supplied. Pointing them at an
-aggregator of your own is the point of having them, so any **public** endpoint
-is accepted — including plaintext and non-default ports, which plenty of
-community operators serve on. What is refused is the private side of the
-network: the cloud metadata server, the container's own loopback, and the VPC
-the tool sits in.
+aggregator of your own is the point of having them, so any **public** `https`
+endpoint is accepted, on any port. What is refused is `http` and the private side
+of the network: the cloud metadata server, the container's own loopback, and the
+VPC the tool sits in.
 
 That is enforced in two places, because refusing `169.254.169.254` and
 `metadata.google.internal` by name is a one-line bypass away from useless — any
@@ -257,6 +256,10 @@ URLs by concatenation (`{base}/v1/blobs/{id}`), so a base ending in `#` or `?`
 swallows everything appended to it and turns a blob read into a request for the
 host's root. A path is fine and concatenates as expected, so an aggregator
 served under a prefix works.
+
+Community aggregators that are only reachable over `http` cannot be used. Blob
+contents and blob IDs would otherwise cross the network in the clear, and a
+plaintext hop is a place for someone to substitute what the tool reads.
 
 Only values passed through the input ports are checked. `WALRUS_PUBLISHER_URL`
 and `WALRUS_AGGREGATOR_URL` are deployment configuration, and an operator

@@ -2,8 +2,8 @@
 //!
 //! Anyone who can submit a DAG controls `publisher_url` / `aggregator_url` and
 //! `upload-file`'s `file_path`. Picking your own Walrus endpoint is the point of
-//! the URL ports, so they stay open to any *public* endpoint and closed to the
-//! private side of the network — the cloud metadata server, the container's
+//! the URL ports, so they stay open to any public `https` endpoint and closed to
+//! the private side of the network — the cloud metadata server, the container's
 //! loopback, the VPC. `file_path` has no such legitimate use on a hosted tool
 //! and is off unless an upload root is configured.
 //!
@@ -61,16 +61,16 @@ pub mod validation {
     /// The query and fragment rules are what they are because the SDK builds
     /// request URLs by string concatenation (`{base}/v1/blobs/{id}`): a base
     /// carrying either one swallows everything appended after it, so
-    /// `http://host/#` reads the host's root instead of a blob. That is how the
+    /// `https://host/#` reads the host's root instead of a blob. That is how the
     /// 2026-09-30 metadata probes got a response at all. A path concatenates the
     /// way the SDK expects, so an aggregator served under a prefix still works.
     pub(crate) fn check_endpoint_url(raw: &str) -> Result<(), EndpointError> {
         let url = Url::parse(raw).map_err(|e| EndpointError(e.to_string()))?;
 
-        let scheme = url.scheme();
-        if scheme != "http" && scheme != "https" {
+        if url.scheme() != "https" {
             return Err(EndpointError(format!(
-                "endpoint scheme `{scheme}` is not allowed"
+                "endpoint must use https, got `{}`",
+                url.scheme()
             )));
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -176,7 +176,7 @@ pub mod validation {
     }
 
     /// Parse `host` as an IP literal, accepting the bracketed IPv6 form `Url`
-    /// produces. Oddities like `http://2130706433/` need no handling: `Url`
+    /// produces. Oddities like `https://2130706433/` need no handling: `Url`
     /// normalizes those to dotted-quad while parsing.
     fn host_as_ip(host: &str) -> Option<IpAddr> {
         host.strip_prefix('[')
@@ -337,8 +337,6 @@ pub mod validation {
                 "https://publisher.walrus-testnet.walrus.space",
                 "https://aggregator.walrus-mainnet.walrus.space",
                 "https://walrus-mainnet-publisher-1.staketab.org",
-                // Plaintext and odd ports are common among community operators.
-                "http://walrus-testnet.suicore.com",
                 "https://walrus.example.com:9000",
                 "https://cdn.example.com/walrus",
             ] {
@@ -352,19 +350,18 @@ pub mod validation {
 
         #[test]
         fn metadata_servers_are_refused() {
-            // The 2026-09-30 probes, verbatim.
+            // https throughout so these fail on the address, not the scheme.
             for url in [
-                "http://169.254.169.254/#",
-                "http://metadata.google.internal/#",
+                "https://169.254.169.254/",
                 "https://metadata.google.internal",
-                "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
                 // ECS task metadata, and Alibaba's.
-                "http://169.254.170.2/v2/credentials/",
-                "http://100.100.100.200/latest/meta-data/",
+                "https://169.254.170.2/v2/credentials/",
+                "https://100.100.100.200/latest/meta-data/",
                 // Decimal and hex spellings of 169.254.169.254.
-                "http://2852039166/",
-                "http://0xA9FEA9FE/",
-                "http://metadata/computeMetadata/v1/",
+                "https://2852039166/",
+                "https://0xA9FEA9FE/",
+                "https://metadata/computeMetadata/v1/",
             ] {
                 assert!(
                     check_endpoint_url(url).is_err(),
@@ -376,20 +373,20 @@ pub mod validation {
         #[test]
         fn loopback_and_private_ranges_are_refused() {
             for url in [
-                "http://127.0.0.1:8080",
-                "http://localhost:8080",
+                "https://127.0.0.1:8080",
+                "https://localhost:8080",
                 "https://LOCALHOST",
-                "http://[::1]:8080",
-                "http://10.0.0.5",
-                "http://172.16.0.1",
-                "http://192.168.1.1",
-                "http://0.0.0.0",
-                "http://[fd00::1]",
-                "http://[fe80::1]",
-                "http://[::ffff:169.254.169.254]",
-                "http://[::ffff:127.0.0.1]",
-                "http://[2002:a9fe:a9fe::]",
-                "http://[64:ff9b::a9fe:a9fe]",
+                "https://[::1]:8080",
+                "https://10.0.0.5",
+                "https://172.16.0.1",
+                "https://192.168.1.1",
+                "https://0.0.0.0",
+                "https://[fd00::1]",
+                "https://[fe80::1]",
+                "https://[::ffff:169.254.169.254]",
+                "https://[::ffff:127.0.0.1]",
+                "https://[2002:a9fe:a9fe::]",
+                "https://[64:ff9b::a9fe:a9fe]",
             ] {
                 assert!(
                     check_endpoint_url(url).is_err(),
@@ -402,8 +399,8 @@ pub mod validation {
         fn internal_domain_suffixes_are_refused() {
             for url in [
                 "https://walrus.tools.internal",
-                "http://walrus.nexus.local",
-                "http://publisher.localhost",
+                "https://walrus.nexus.local",
+                "https://publisher.localhost",
                 "https://1.0.0.127.in-addr.arpa",
             ] {
                 assert!(
@@ -435,8 +432,9 @@ pub mod validation {
         }
 
         #[test]
-        fn non_http_schemes_are_refused() {
+        fn only_https_is_accepted() {
             for url in [
+                "http://aggregator.walrus-testnet.walrus.space",
                 "file:///etc/passwd",
                 "gopher://example.com:70/",
                 "ftp://example.com/",
@@ -506,7 +504,7 @@ pub mod validation {
         async fn a_name_resolving_to_a_private_address_is_refused() {
             // localhost is the one name guaranteed to resolve to loopback
             // everywhere; the shape being tested is a name with private records.
-            let err = resolve_public_endpoint("http://localhost:8080")
+            let err = resolve_public_endpoint("https://localhost:8080")
                 .await
                 .unwrap_err()
                 .to_string();
