@@ -4,8 +4,8 @@
 # Builds a single tool binary identified by BINARY and TOOL_DIR build args
 # (TOOL_DIR is the tool's path relative to the build context, e.g.
 # "offchain/tools/http"), embeds TOOL_FQN_VERSION (computed by CI from the
-# tool's subtree hash) so the tool's FQN strings carry the content-addressed
-# version.
+# tool's source and shared build inputs) so the tool's FQN strings carry the
+# version of the code and dependencies being built.
 #
 # Building via --manifest-path scopes cargo to the workspace member's
 # Cargo.toml, sidestepping ambiguity when a tool crate's name collides with
