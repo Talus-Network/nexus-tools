@@ -184,7 +184,7 @@ impl WalrusConfig {
             .aggregator_url
             .or_else(|| std::env::var(ENV_AGGREGATOR_URL).ok());
 
-        let http_client = build_http_client(publisher_url.as_deref(), &pins).await;
+        let http_client = build_http_client(publisher_url.as_deref(), &pins).await?;
 
         let mut client_builder = WalrusClient::builder().with_client(http_client);
         if let Some(ref url) = publisher_url {
@@ -204,37 +204,57 @@ impl WalrusConfig {
 async fn build_http_client(
     publisher_url: Option<&str>,
     pins: &[(String, Vec<SocketAddr>)],
-) -> reqwest::Client {
+) -> Result<reqwest::Client, EndpointError> {
     let pinned = || {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder()
+            // Redirects are refused rather than followed, and this is the whole
+            // of what makes the endpoint checks binding. `resolve_to_addrs`
+            // installs a *per-hostname* DNS override, so a pin constrains only
+            // the host it names; reqwest's default policy follows up to 10
+            // redirects, and a redirect target is neither validated nor pinned.
+            // Without this, `aggregator_url=https://attacker.example/` passes
+            // every check and then answers `302 Location: http://127.0.0.1/…`
+            // (or a VPC host, or a non-GCP metadata address) and the tool
+            // fetches it and hands the body back to the DAG author. Walrus
+            // publishers and aggregators serve their blob routes directly, so
+            // nothing legitimate needs a redirect; one shows up as an API error
+            // carrying the 3xx status.
+            //
+            // This also keeps the `X-Serverless-Authorization` token below from
+            // travelling: reqwest strips `Authorization` on a cross-host
+            // redirect but not custom headers.
+            .redirect(reqwest::redirect::Policy::none());
         for (host, addrs) in pins {
             builder = builder.resolve_to_addrs(host, addrs);
         }
         builder
     };
-    let fallback = || pinned().build().unwrap_or_else(|_| reqwest::Client::new());
-
-    let Some(audience) = publisher_url.filter(|u| is_cloud_run_url(u)) else {
-        return fallback();
+    // Never `reqwest::Client::new()` on a failure path: that client carries
+    // neither the pins nor the redirect policy.
+    let finish = |builder: reqwest::ClientBuilder| {
+        builder
+            .build()
+            .map_err(|e| EndpointError::new(format!("could not build an HTTP client: {e}")))
     };
 
-    match fetch_id_token(audience).await {
-        Ok(token) => match HeaderValue::from_str(&format!("Bearer {token}")) {
-            Ok(value) => {
-                let mut headers = HeaderMap::new();
-                // X-Serverless-Authorization (not Authorization) so Cloud Run
-                // consumes the token for IAM and strips it before passing
-                // the request on to the publisher container.
-                headers.insert(X_SERVERLESS_AUTHORIZATION.clone(), value);
-                pinned()
-                    .default_headers(headers)
-                    .build()
-                    .unwrap_or_else(|_| reqwest::Client::new())
-            }
-            Err(_) => fallback(),
-        },
-        Err(_) => fallback(),
-    }
+    let Some(audience) = publisher_url.filter(|u| is_cloud_run_url(u)) else {
+        return finish(pinned());
+    };
+
+    let token = match fetch_id_token(audience).await {
+        Ok(token) => token,
+        Err(_) => return finish(pinned()),
+    };
+    let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+        return finish(pinned());
+    };
+
+    let mut headers = HeaderMap::new();
+    // X-Serverless-Authorization (not Authorization) so Cloud Run consumes the
+    // token for IAM and strips it before passing the request on to the
+    // publisher container.
+    headers.insert(X_SERVERLESS_AUTHORIZATION.clone(), value);
+    finish(pinned().default_headers(headers))
 }
 
 /// True if the URL's **host** is a Google Cloud Run service hostname
@@ -395,13 +415,15 @@ mod tests {
     #[tokio::test]
     async fn build_http_client_returns_plain_for_no_url() {
         // None URL must skip the metadata-server path entirely.
-        let _ = build_http_client(None, &[]).await;
+        let _ = build_http_client(None, &[]).await.unwrap();
     }
 
     #[tokio::test]
     async fn build_http_client_returns_plain_for_non_cloud_run_url() {
         // Non-Cloud-Run URL must skip the metadata-server path entirely.
-        let _ = build_http_client(Some("https://publisher.walrus-testnet.walrus.space"), &[]).await;
+        let _ = build_http_client(Some("https://publisher.walrus-testnet.walrus.space"), &[])
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -409,7 +431,91 @@ mod tests {
         // Cloud Run URL → fetch_id_token is invoked, which fails because
         // metadata.google.internal is unreachable from the test environment.
         // The fallback path should still return a usable client.
-        let _ = build_http_client(Some("https://test-service-abc-uc.a.run.app"), &[]).await;
+        let _ = build_http_client(Some("https://test-service-abc-uc.a.run.app"), &[])
+            .await
+            .unwrap();
+    }
+
+    /// A redirect is the one way a request can leave the host that was checked
+    /// and pinned, because a DNS override only binds the host it names. The
+    /// client must hand back the 3xx rather than follow it.
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let mut internal = mockito::Server::new_async().await;
+        let internal_hit = internal
+            .mock("GET", "/v1/blobs/secret")
+            .with_status(200)
+            .with_body("INTERNAL")
+            .create_async()
+            .await;
+
+        let mut public = mockito::Server::new_async().await;
+        let redirect = public
+            .mock("GET", "/v1/blobs/x")
+            .with_status(302)
+            .with_header("location", &format!("{}/v1/blobs/secret", internal.url()))
+            .create_async()
+            .await;
+
+        let client = build_http_client(None, &[]).await.unwrap();
+        let response = client
+            .get(format!("{}/v1/blobs/x", public.url()))
+            .send()
+            .await
+            .expect("the 3xx itself is a successful response");
+
+        assert_eq!(response.status(), 302);
+        redirect.assert_async().await;
+        // The redirect target was never contacted.
+        assert!(!internal_hit.matched_async().await);
+    }
+
+    /// The pinning claim: a hostname that resolves nowhere must still reach the
+    /// address it was pinned to, which is what makes the resolved check binding
+    /// rather than advisory.
+    #[tokio::test]
+    async fn pinned_addresses_bind_the_connection() {
+        let mut server = mockito::Server::new_async().await;
+        let hit = server
+            .mock("GET", "/v1/blobs/x")
+            .with_status(200)
+            .with_body("PINNED")
+            .create_async()
+            .await;
+
+        let addr: SocketAddr = server.host_with_port().parse().expect("mockito addr");
+        let pins = vec![("pinned.invalid".to_string(), vec![addr])];
+        let client = build_http_client(None, &pins).await.unwrap();
+
+        let body = client
+            .get(format!("http://pinned.invalid:{}/v1/blobs/x", addr.port()))
+            .send()
+            .await
+            .expect("pinned host resolves")
+            .text()
+            .await
+            .expect("body");
+
+        assert_eq!(body, "PINNED");
+        hit.assert_async().await;
+    }
+
+    /// And the pin binds only the host it names — a sibling host is resolved
+    /// normally, which is exactly why redirects have to be refused.
+    #[tokio::test]
+    async fn a_pin_does_not_cover_other_hosts() {
+        let pins = vec![(
+            "pinned.invalid".to_string(),
+            vec!["127.0.0.1:1".parse::<SocketAddr>().unwrap()],
+        )];
+        let client = build_http_client(None, &pins).await.unwrap();
+
+        let err = client
+            .get("http://other.invalid/v1/blobs/x")
+            .send()
+            .await
+            .expect_err("an unpinned .invalid host must not resolve");
+        assert!(err.is_connect() || err.is_request(), "{err:?}");
     }
 
     #[tokio::test]

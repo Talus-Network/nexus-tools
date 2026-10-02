@@ -251,6 +251,13 @@ public name can carry a private address:
   lookup, and a name with alternating records passes the check and then connects
   to the private address.
 
+**Redirects are refused, not followed.** A DNS pin binds only the host it names,
+so a redirect is the one way a request can leave the host that was checked. A
+validated public endpoint answering `302 Location: http://127.0.0.1/…` would
+otherwise be fetched and its body handed back. Walrus publishers and aggregators
+serve their blob routes directly, so nothing legitimate needs a redirect; one
+surfaces as an API error carrying the 3xx status.
+
 A URL must also carry no query, fragment or credentials. The SDK builds request
 URLs by concatenation (`{base}/v1/blobs/{id}`), so a base ending in `#` or `?`
 swallows everything appended to it and turns a blob read into a request for the

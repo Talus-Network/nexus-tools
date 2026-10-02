@@ -41,6 +41,12 @@ pub mod validation {
     #[error("{0}")]
     pub struct EndpointError(String);
 
+    impl EndpointError {
+        pub(crate) fn new(message: impl Into<String>) -> Self {
+            Self(message.into())
+        }
+    }
+
     /// Rejecting here rather than inside `invoke` keeps the tools' output schemas
     /// unchanged. The resolved half of the policy runs in
     /// [`crate::client::WalrusConfig::build`], which has an async context to do
@@ -112,7 +118,10 @@ pub mod validation {
             };
         }
 
+        // The root label is significant to `Url` but not to the resolver, so
+        // `metadata.google.internal.` has to be read as `metadata.google.internal`.
         let host = host.to_ascii_lowercase();
+        let host = host.strip_suffix('.').unwrap_or(&host);
         if host == "localhost" {
             return Err(EndpointError(
                 "endpoint host `localhost` is not a public host".to_string(),
@@ -157,7 +166,7 @@ pub mod validation {
         let addrs: Vec<SocketAddr> = tokio::time::timeout(RESOLVE_TIMEOUT, lookup)
             .await
             .map_err(|_| EndpointError(format!("endpoint host `{host}` did not resolve in time")))?
-            .map_err(|e| EndpointError(format!("endpoint host `{host}` did not resolve: {e}")))?
+            .map_err(|_| EndpointError(format!("endpoint host `{host}` did not resolve")))?
             .collect();
 
         if addrs.is_empty() {
@@ -165,10 +174,12 @@ pub mod validation {
                 "endpoint host `{host}` resolved to no addresses"
             )));
         }
-        if let Some(addr) = addrs.iter().find(|addr| !is_public_ip(addr.ip())) {
+        // Deliberately does not name the address: the refusal reason is handed
+        // back to whoever submitted the DAG, and echoing it turns the tool into
+        // an internal-DNS oracle.
+        if addrs.iter().any(|addr| !is_public_ip(addr.ip())) {
             return Err(EndpointError(format!(
-                "endpoint host `{host}` resolves to `{}`, which is not a public address",
-                addr.ip()
+                "endpoint host `{host}` does not resolve to a public address"
             )));
         }
 
@@ -508,7 +519,12 @@ pub mod validation {
                 .await
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("not a public address"), "{err}");
+            assert!(
+                err.contains("does not resolve to a public address"),
+                "{err}"
+            );
+            // The reason reaches the DAG author, so it must not name the address.
+            assert!(!err.contains("127.0.0.1"), "{err}");
         }
 
         #[tokio::test]
