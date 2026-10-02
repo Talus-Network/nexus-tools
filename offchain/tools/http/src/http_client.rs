@@ -6,10 +6,11 @@ use {
     crate::{
         errors::HttpToolError,
         models::{AuthConfig, HttpMethod, RequestBody, UrlInput},
+        network::{Client, DestinationPolicy, Error as NetworkError},
     },
     backon::{ExponentialBuilder, Retryable},
     base64::Engine,
-    reqwest::{multipart::Form, Client, Method},
+    reqwest::{multipart::Form, Method},
     std::collections::HashMap,
     url::Url,
 };
@@ -23,7 +24,7 @@ pub struct HttpClient {
 impl HttpClient {
     /// Creates a new HTTP client instance with default configuration
     pub fn new() -> Result<Self, HttpToolError> {
-        Self::with_config(None, None) // Default: 30s timeout, follow redirects
+        Self::with_config(None, None) // Default: 5 second timeout, no redirects
     }
 
     /// Creates a new HTTP client with custom configuration
@@ -31,23 +32,33 @@ impl HttpClient {
         timeout_ms: Option<u64>,
         follow_redirects: Option<bool>,
     ) -> Result<Self, HttpToolError> {
-        let mut builder = Client::builder();
+        Self::with_policy(DestinationPolicy::Public, timeout_ms, follow_redirects)
+    }
 
-        // Set timeout with default (5 seconds = 5000ms)
-        let timeout_ms = timeout_ms.unwrap_or(5000);
-        builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
-
-        // Set redirect policy with default (don't follow redirects, following curl's philosophy)
-        let follow_redirects = follow_redirects.unwrap_or(false);
-        if follow_redirects {
-            builder = builder.redirect(reqwest::redirect::Policy::limited(3));
-        } else {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
-
-        let client = builder.build().map_err(HttpToolError::from_network_error)?;
-
+    pub fn with_policy(
+        policy: DestinationPolicy,
+        timeout_ms: Option<u64>,
+        follow_redirects: Option<bool>,
+    ) -> Result<Self, HttpToolError> {
+        let client = Client::builder(policy)
+            .timeout(std::time::Duration::from_millis(
+                timeout_ms.unwrap_or(5000).clamp(1, 30_000),
+            ))
+            .redirect_limit(if follow_redirects.unwrap_or(false) {
+                3
+            } else {
+                0
+            })
+            .build()
+            .map_err(Self::network_error)?;
         Ok(Self { client })
+    }
+
+    fn network_error(error: NetworkError) -> HttpToolError {
+        match error {
+            NetworkError::Destination(message) => HttpToolError::ErrInput(message.to_string()),
+            NetworkError::Http(error) => HttpToolError::from_network_error(error),
+        }
     }
 
     /// Resolves URL from input with proper validation
@@ -62,17 +73,6 @@ impl HttpClient {
                     .map_err(HttpToolError::from_url_parse_error)?
             }
         };
-
-        // Block localhost and 127.0.0.1 for security (skip in test environment)
-        #[cfg(not(test))]
-        if let Some(host) = url.host_str() {
-            if host == "localhost" || host == "127.0.0.1" {
-                return Err(HttpToolError::ErrInput(
-                    "Requests to localhost and 127.0.0.1 are not allowed for security reasons"
-                        .to_string(),
-                ));
-            }
-        }
 
         Ok(url)
     }
@@ -91,7 +91,10 @@ impl HttpClient {
         headers: Option<&HashMap<String, String>>,
         query: Option<&HashMap<String, String>>,
     ) -> Result<reqwest::RequestBuilder, HttpToolError> {
-        let mut request = self.client.request(method, url);
+        let mut request = self
+            .client
+            .request(method, url)
+            .map_err(Self::network_error)?;
 
         // Add authentication
         if let Some(auth) = auth {
@@ -210,10 +213,11 @@ impl HttpClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, HttpToolError> {
-        request
-            .send()
+        let request = request.build().map_err(HttpToolError::from_network_error)?;
+        self.client
+            .execute(request)
             .await
-            .map_err(HttpToolError::from_network_error)
+            .map_err(Self::network_error)
     }
 
     /// Executes a request with retry logic
@@ -385,7 +389,7 @@ mod tests {
     fn test_build_multipart_form() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::POST, url);
+        let request = client.client.request(reqwest::Method::POST, url).unwrap();
 
         let fields = vec![
             crate::models::MultipartField {
@@ -408,7 +412,7 @@ mod tests {
     fn test_build_raw_body() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::POST, url);
+        let request = client.client.request(reqwest::Method::POST, url).unwrap();
 
         let data = base64::engine::general_purpose::STANDARD.encode("Hello World");
         let content_type = Some("application/octet-stream".to_string());
@@ -421,7 +425,7 @@ mod tests {
     fn test_build_raw_body_invalid_base64() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::POST, url);
+        let request = client.client.request(reqwest::Method::POST, url).unwrap();
 
         let data = "invalid-base64!";
         let content_type = Some("application/octet-stream".to_string());
@@ -445,7 +449,7 @@ mod tests {
     fn test_build_body_json() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::POST, url);
+        let request = client.client.request(reqwest::Method::POST, url).unwrap();
 
         let body = RequestBody::Json {
             data: serde_json::json!({"key": "value"}),
@@ -459,7 +463,7 @@ mod tests {
     fn test_build_body_form() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::POST, url);
+        let request = client.client.request(reqwest::Method::POST, url).unwrap();
 
         let body = RequestBody::Form {
             data: HashMap::from([
@@ -476,7 +480,7 @@ mod tests {
     fn test_build_body_ignores_for_get() {
         let client = HttpClient::new().unwrap();
         let url = url::Url::parse("https://example.com").unwrap();
-        let request = client.client.request(reqwest::Method::GET, url);
+        let request = client.client.request(reqwest::Method::GET, url).unwrap();
 
         let body = RequestBody::Json {
             data: serde_json::json!({"key": "value"}),

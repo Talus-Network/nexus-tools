@@ -201,6 +201,9 @@ async fn upload_media(
     additional_owners: Option<&Vec<String>>,
     optimistic_upload: bool,
 ) -> TwitterResult<MediaUploadData> {
+    if media_data.is_empty() {
+        return Err(TwitterError::Other("Media must not be empty".to_string()));
+    }
     // Calculate optimal chunk size if not specified
     let optimal_chunk_size = if chunk_size > 0 {
         chunk_size
@@ -528,6 +531,21 @@ async fn check_media_status(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn empty_media_is_rejected_before_upload() {
+        let (mut server, tool, _) = create_server_and_tool().await;
+        let requests = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let mut input = create_test_input();
+        input.media_data.clear();
+        input.chunk_size = 0;
+        assert!(matches!(tool.invoke(input).await, Output::Err { .. }));
+        requests.assert_async().await;
+    }
+
     use {super::*, crate::media::models::ProcessingState, mockito::Server, serde_json::json};
 
     impl UploadMedia {

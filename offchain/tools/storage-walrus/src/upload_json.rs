@@ -133,7 +133,13 @@ impl NexusTool for UploadJson {
                         tx_digest: ac.event.tx_digest.clone(),
                     }
                 } else {
-                    let created_blob = storage_info.newly_created.unwrap();
+                    let Some(created_blob) = storage_info.newly_created else {
+                        return Output::Err {
+                            reason: "Publisher response is missing a storage result".to_string(),
+                            kind: UploadErrorKind::Network,
+                            status_code: None,
+                        };
+                    };
 
                     Output::NewlyCreated {
                         blob_id: created_blob.blob_object.blob_id,

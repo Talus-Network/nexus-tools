@@ -61,7 +61,7 @@ pub(crate) struct Input {
     #[serde(default)]
     pub json_schema: Option<HttpJsonSchema>,
 
-    /// Request timeout in milliseconds (default: 30000)
+    /// Request timeout in milliseconds (default: 5000, maximum: 30000)
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 
@@ -69,7 +69,7 @@ pub(crate) struct Input {
     #[serde(default)]
     pub retries: Option<u32>,
 
-    /// Whether to follow redirects (default: true)
+    /// Whether to follow redirects (default: false)
     #[serde(default)]
     pub follow_redirects: Option<bool>,
 }
@@ -191,14 +191,18 @@ pub(crate) enum Output {
 }
 
 /// HTTP Generic tool implementation
-pub(crate) struct Http;
+pub(crate) struct Http {
+    destination_policy: crate::network::DestinationPolicy,
+}
 
 impl NexusTool for Http {
     type Input = Input;
     type Output = Output;
 
     async fn new() -> Self {
-        Self
+        Self {
+            destination_policy: crate::network::DestinationPolicy::Public,
+        }
     }
 
     fn fqn() -> ToolFqn {
@@ -261,7 +265,11 @@ impl Http {
         // Create HTTP client with configuration
         let timeout_ms = input.timeout_ms.unwrap_or(5000);
         let follow_redirects = input.follow_redirects.unwrap_or(false);
-        let http_client = HttpClient::with_config(Some(timeout_ms), Some(follow_redirects))?;
+        let http_client = HttpClient::with_policy(
+            self.destination_policy.clone(),
+            Some(timeout_ms),
+            Some(follow_redirects),
+        )?;
 
         // Resolve URL from input with proper validation
         let resolved_url = http_client.resolve_url(&input.url)?;
@@ -297,8 +305,8 @@ impl Http {
         if response.status().is_client_error() || response.status().is_server_error() {
             let reason_phrase = response.status().canonical_reason().unwrap_or("");
             let body = response.text().await.unwrap_or_default();
-            let snippet = if body.len() > 200 {
-                format!("{}...", &body[..200])
+            let snippet = if let Some((boundary, _)) = body.char_indices().nth(200) {
+                format!("{}...", &body[..boundary])
             } else {
                 body
             };
@@ -457,10 +465,62 @@ impl Http {
 mod tests {
     use {super::*, mockito::Server};
 
+    #[tokio::test]
+    async fn default_tool_refuses_private_destinations() {
+        let tool = Http::new().await;
+        for url in [
+            "http://169.254.169.254/",
+            "http://metadata/",
+            "http://[::1]/",
+        ] {
+            let input = serde_json::from_value(serde_json::json!({"url": url})).unwrap();
+            assert!(
+                matches!(
+                    tool.invoke(input).await,
+                    Output::Err {
+                        kind: HttpErrorKind::Input,
+                        ..
+                    }
+                ),
+                "{url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unicode_error_bodies_do_not_panic_at_the_snippet_boundary() {
+        let (mut server, tool) = create_server_and_tool().await;
+        let response = server
+            .mock("GET", "/error")
+            .with_status(500)
+            .with_body(format!("{}éZ", "a".repeat(199)))
+            .create_async()
+            .await;
+        let input = Input {
+            method: HttpMethod::Get,
+            url: UrlInput::FullUrl(format!("{}/error", server.url())),
+            headers: None,
+            query: None,
+            auth: None,
+            body: None,
+            expect_json: None,
+            json_schema: None,
+            timeout_ms: None,
+            retries: None,
+            follow_redirects: None,
+        };
+        assert!(matches!(tool.invoke(input).await, Output::Err { .. }));
+        response.assert_async().await;
+    }
+
     /// Helper function to create a mock server and HTTP tool for testing
     async fn create_server_and_tool() -> (mockito::ServerGuard, Http) {
         let server = Server::new_async().await;
-        let tool = Http::new().await;
+        let tool = Http {
+            destination_policy: crate::network::DestinationPolicy::Origin(
+                reqwest::Url::parse(&server.url()).unwrap(),
+            ),
+        };
         (server, tool)
     }
 

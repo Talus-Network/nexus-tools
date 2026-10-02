@@ -15,9 +15,9 @@ name = "http"
 path = "src/main.rs"
 
 [dependencies]
+jsonschema.workspace = true
 backon = "0.4"
 base64.workspace = true
-jsonschema.workspace = true
 reqwest = { workspace = true, features = ["json", "multipart"] }
 schemars.workspace = true
 serde.workspace = true
@@ -31,6 +31,7 @@ nexus-toolkit.workspace = true
 nexus-sdk.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 mockito.workspace = true
 
 [build-dependencies]

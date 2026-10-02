@@ -17,10 +17,10 @@ name = "llm-openai-chat-completion"
 path = "src/main.rs"
 
 [dependencies]
+jsonschema.workspace = true
 anyhow.workspace = true
 async-openai = "0.27"
 chrono.workspace = true
-jsonschema.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -34,6 +34,7 @@ nexus-toolkit.workspace = true
 nexus-sdk.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 mockito.workspace = true
 portpicker.workspace = true
 rstest.workspace = true

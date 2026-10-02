@@ -24,12 +24,13 @@
 //!
 //! ## Authentication for Cloud Run publishers
 //!
-//! When the resolved publisher URL is a Google Cloud Run hostname
-//! (`*.run.app`), the underlying [`reqwest::Client`] is built with a default
+//! When the resolved publisher URL equals the configured publisher and is a
+//! Google Cloud Run hostname (`*.run.app`), its [`reqwest::Client`] carries a default
 //! `X-Serverless-Authorization: Bearer <id_token>` header. The token is an
 //! OIDC ID token fetched from the GCE metadata server with the publisher
 //! URL as the audience claim, and is what authenticates this tool against
 //! a publisher running on Cloud Run with `roles/run.invoker` IAM enforced.
+//! Aggregator requests use a separate client without this credential.
 //!
 //! `X-Serverless-Authorization` is used (rather than `Authorization`)
 //! because Cloud Run validates and then **strips** that header before
@@ -152,11 +153,9 @@ impl WalrusConfig {
     /// without it the connection does its own lookup, and a name with alternating
     /// records passes the check and then connects to the private address.
     ///
-    /// When the resolved publisher URL points at a private Google Cloud Run host
-    /// (`*.run.app`), an OIDC ID token is fetched from the GCE metadata server
-    /// and attached as a default `Authorization: Bearer` header on every request.
-    /// This authenticates requests against Cloud Run services with
-    /// `INGRESS_TRAFFIC_INTERNAL_ONLY` and `roles/run.invoker` enforcement.
+    /// Only the publisher URL configured by the operator can receive an OIDC
+    /// ID token. Publisher requests use `X-Serverless-Authorization`; aggregator
+    /// requests use a separate client without that header.
     pub async fn build(self) -> Result<WalrusClient, EndpointError> {
         // Only `with_*_url` values are checked — those are the input ports. The
         // env vars and SDK defaults are deployment configuration, and an operator
@@ -177,16 +176,21 @@ impl WalrusConfig {
             }
         }
 
-        let publisher_url = self
-            .publisher_url
-            .or_else(|| std::env::var(ENV_PUBLISHER_URL).ok());
+        let configured_publisher = std::env::var(ENV_PUBLISHER_URL).ok();
+        let publisher_url = self.publisher_url.or_else(|| configured_publisher.clone());
         let aggregator_url = self
             .aggregator_url
             .or_else(|| std::env::var(ENV_AGGREGATOR_URL).ok());
 
-        let http_client = build_http_client(publisher_url.as_deref(), &pins).await?;
+        let audience = publisher_url
+            .as_deref()
+            .and_then(|url| publisher_auth_audience(url, configured_publisher.as_deref()));
+        let publisher_client = build_http_client(audience, &pins).await?;
+        let aggregator_client = build_http_client(None, &pins).await?;
 
-        let mut client_builder = WalrusClient::builder().with_client(http_client);
+        let mut client_builder = WalrusClient::builder()
+            .with_client(aggregator_client)
+            .with_publisher_client(publisher_client);
         if let Some(ref url) = publisher_url {
             client_builder = client_builder.with_publisher_url(url);
         }
@@ -197,8 +201,8 @@ impl WalrusConfig {
     }
 }
 
-/// Build a reqwest::Client pinned to `pins` that, when targeting a Cloud Run
-/// host, carries an OIDC ID token as a default Authorization header. Falls back
+/// Build a client pinned to `pins` with an optional configured publisher token
+/// in the `X-Serverless-Authorization` header. Falls back
 /// to the pins alone on any auth failure: the request then surfaces a 401/403
 /// from Cloud Run, the same outcome a misconfigured deployment produces.
 async fn build_http_client(
@@ -223,7 +227,8 @@ async fn build_http_client(
             // This also keeps the `X-Serverless-Authorization` token below from
             // travelling: reqwest strips `Authorization` on a cross-host
             // redirect but not custom headers.
-            .redirect(reqwest::redirect::Policy::none());
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy();
         for (host, addrs) in pins {
             builder = builder.resolve_to_addrs(host, addrs);
         }
@@ -257,6 +262,11 @@ async fn build_http_client(
     finish(pinned().default_headers(headers))
 }
 
+// Only an endpoint selected by the operator may receive the service identity.
+fn publisher_auth_audience<'a>(url: &'a str, configured: Option<&str>) -> Option<&'a str> {
+    (configured == Some(url) && is_cloud_run_url(url)).then_some(url)
+}
+
 /// True if the URL's **host** is a Google Cloud Run service hostname
 /// (`*.run.app`).
 ///
@@ -283,11 +293,13 @@ fn is_cloud_run_url(url: &str) -> bool {
 ///
 /// [Fetching identity tokens]: https://cloud.google.com/run/docs/authenticating/service-to-service#acquire-token
 async fn fetch_id_token(audience: &str) -> Result<String, reqwest::Error> {
-    let url = format!("{METADATA_IDENTITY_URL}?audience={audience}&format=full");
     let response = reqwest::Client::builder()
         .timeout(METADATA_FETCH_TIMEOUT)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()?
-        .get(url)
+        .get(METADATA_IDENTITY_URL)
+        .query(&[("audience", audience), ("format", "full")])
         .header("Metadata-Flavor", "Google")
         .send()
         .await?
@@ -385,6 +397,88 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn sdk_keeps_publisher_credentials_out_of_all_aggregator_requests() {
+        let mut publisher = mockito::Server::new_async().await;
+        let mut aggregator = mockito::Server::new_async().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_SERVERLESS_AUTHORIZATION.clone(),
+            HeaderValue::from_static("Bearer harmless-test-token"),
+        );
+        let sdk = WalrusClient::builder()
+            .with_publisher_url(&publisher.url())
+            .with_aggregator_url(&aggregator.url())
+            .with_publisher_client(
+                reqwest::Client::builder()
+                    .default_headers(headers)
+                    .build()
+                    .unwrap(),
+            )
+            .build();
+        let upload = publisher.mock("PUT", "/v1/blobs").match_query(mockito::Matcher::Any)
+            .match_header("x-serverless-authorization", "Bearer harmless-test-token")
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"alreadyCertified":{"blobId":"blob","endEpoch":1,"event":{"txDigest":"digest"}}}"#)
+            .expect(2).create_async().await;
+        let read = aggregator
+            .mock("GET", "/v1/blobs/blob")
+            .match_header("x-serverless-authorization", mockito::Matcher::Missing)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+        let head = aggregator
+            .mock("HEAD", "/v1/blobs/blob")
+            .match_header("x-serverless-authorization", mockito::Matcher::Missing)
+            .create_async()
+            .await;
+        sdk.upload_bytes(b"{}".to_vec(), 1, None).await.unwrap();
+        sdk.upload_json(&serde_json::json!({}), 1, None)
+            .await
+            .unwrap();
+        sdk.read_file("blob").await.unwrap();
+        sdk.read_json::<serde_json::Value>("blob").await.unwrap();
+        assert!(sdk.verify_blob("blob").await.unwrap());
+        upload.assert_async().await;
+        read.assert_async().await;
+        head.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn sdk_rejects_a_publisher_response_without_a_storage_result() {
+        let mut publisher = mockito::Server::new_async().await;
+        let response = publisher
+            .mock("PUT", "/v1/blobs")
+            .match_query(mockito::Matcher::Any)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .create_async()
+            .await;
+        let sdk = WalrusClient::builder()
+            .with_publisher_url(&publisher.url())
+            .build();
+        assert!(sdk.upload_bytes(b"{}".to_vec(), 1, None).await.is_err());
+        response.assert_async().await;
+    }
+
+    #[test]
+    fn caller_chosen_publishers_do_not_receive_service_credentials() {
+        let configured = "https://publisher.run.app";
+        assert_eq!(
+            super::publisher_auth_audience(configured, Some(configured)),
+            Some(configured)
+        );
+        assert_eq!(
+            super::publisher_auth_audience("https://caller.run.app", Some(configured)),
+            None
+        );
+        assert_eq!(
+            super::publisher_auth_audience("https://caller.run.app", None),
+            None
+        );
+    }
+
     use {super::*, tokio::sync::Mutex};
 
     /// Serializes tests that mutate process-global env vars.

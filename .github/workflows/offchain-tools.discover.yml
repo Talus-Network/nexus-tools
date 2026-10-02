@@ -13,10 +13,10 @@ on:
         description: 'JSON matrix of every discovered tool'
         value: ${{ jobs.discover.outputs.matrix-all }}
       matrix-changed:
-        description: 'JSON matrix of tools whose subtree changed since base-ref'
+        description: 'JSON matrix of tools whose source or shared build inputs changed since base-ref'
         value: ${{ jobs.discover.outputs.matrix-changed }}
       content-hash:
-        description: 'Aggregate hash of all tools.json + their subtree versions'
+        description: 'Aggregate hash of all tool versions'
         value: ${{ jobs.discover.outputs.content-hash }}
 
 jobs:
@@ -61,6 +61,12 @@ jobs:
           ALL='[]'
           CHANGED='[]'
           HASH_INPUT=""
+
+          # Shared dependencies and build settings are part of every tool version.
+          # Otherwise prepare can retain an old image after a toolkit update.
+          SHARED_INPUTS=$(git ls-tree HEAD -- \
+            offchain/Cargo.toml offchain/Cargo.lock \
+            offchain/Dockerfile offchain/rust-toolchain.toml)
 
           # Shared files force every tool into the "changed" set.
           SHARED_TOUCHED=false
@@ -118,7 +124,7 @@ jobs:
             [ "$SKIP" = "true" ] && continue
 
             TREE_HASH=$(git rev-parse "HEAD:${DIR}/")
-            CONTENT_HASH=$(printf '%s' "$TREE_HASH" | sha256sum | cut -d' ' -f1)
+            CONTENT_HASH=$(printf '%s\n%s\n' "$TREE_HASH" "$SHARED_INPUTS" | sha256sum | cut -d' ' -f1)
             VERSION=$(printf '%d' "0x${CONTENT_HASH:0:8}")
 
             ENTRY=$(jq -nc \
