@@ -227,11 +227,6 @@ network.
 Users supply the data, retention epochs, and optional recipient. Upload inputs
 cannot select a publisher or aggregator. Uploads do not need an aggregator.
 
-For a configured Cloud Run publisher, the tool obtains an identity token for its
-runtime service account. Publisher credentials stay on the upload client;
-aggregator requests use a separate client without those credentials. Reading or
-verifying a blob requires no publisher configuration or publisher authentication.
-
 ## Endpoint targets
 
 Read and verification tools still accept `aggregator_url`. Its resolution order
