@@ -87,12 +87,6 @@ jobs:
           # the entire downstream pipeline (deploy → prepare → register
           # → tf-apply) from touching them. Flip the variable in repo
           # settings → Variables to unblock (no PR needed).
-          #
-          # Current blocks (2026-05-21):
-          #   http — no SSRF guard; would let a DAG reach the GCP
-          #          metadata server and exfiltrate an SA OAuth token.
-          #          Unregistered on chain; re-enable after the guard
-          #          ships in offchain/tools/http/.
           read -ra BLOCKED_TOOLS_ARR <<< "${BLOCKED_TOOLS:-}"
           echo "Blocked tools: ${BLOCKED_TOOLS_ARR[*]:-<none>}"
 
