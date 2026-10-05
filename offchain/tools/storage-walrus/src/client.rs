@@ -2,15 +2,11 @@
 //!
 //! ## URL resolution
 //!
-//! When [`WalrusConfig::build`] runs, the publisher and aggregator URLs are
-//! resolved independently in this order:
-//!   1. Explicit value passed via [`WalrusConfig::with_publisher_url`] /
-//!      [`WalrusConfig::with_aggregator_url`] (per-request, from the tool's
-//!      JSON input).
-//!   2. Env var ([`ENV_PUBLISHER_URL`] / [`ENV_AGGREGATOR_URL`]) — set on the
-//!      container so ops can point the tool at a non-default publisher
-//!      without changing every caller.
-//!   3. SDK defaults (the public Walrus endpoints baked into `nexus_sdk`).
+//! Uploads use [`publisher_client`], which requires [`ENV_PUBLISHER_URL`].
+//! The publisher is chosen by the operator and has no input port or default.
+//! Reads use [`WalrusConfig::build`], which resolves the aggregator from its
+//! input port, then [`ENV_AGGREGATOR_URL`], then the SDK default. Reads do not
+//! need a publisher or fetch publisher credentials.
 //!
 //! ## Retry on publisher consistency 500
 //!
@@ -24,7 +20,7 @@
 //!
 //! ## Authentication for Cloud Run publishers
 //!
-//! When the resolved publisher URL equals the configured publisher and is a
+//! When the configured publisher URL is a
 //! Google Cloud Run hostname (`*.run.app`), its [`reqwest::Client`] carries a default
 //! `X-Serverless-Authorization: Bearer <id_token>` header. The token is an
 //! OIDC ID token fetched from the GCE metadata server with the publisher
@@ -73,7 +69,7 @@ use {
 static X_SERVERLESS_AUTHORIZATION: HeaderName =
     HeaderName::from_static("x-serverless-authorization");
 
-/// Env var providing a default Walrus publisher URL when input doesn't specify one.
+/// Required publisher URL for uploads, configured by the operator.
 const ENV_PUBLISHER_URL: &str = "WALRUS_PUBLISHER_URL";
 
 /// Env var providing a default Walrus aggregator URL when input doesn't specify one.
@@ -105,11 +101,9 @@ pub enum TargetPolicy {
     Unrestricted,
 }
 
-/// Configuration for Walrus client
+/// Configuration for reading from a Walrus aggregator.
 #[derive(Default)]
 pub struct WalrusConfig {
-    /// The walrus publisher URL
-    pub publisher_url: Option<String>,
     /// The URL of the aggregator
     pub aggregator_url: Option<String>,
     /// What a caller-supplied endpoint may resolve to
@@ -120,12 +114,6 @@ impl WalrusConfig {
     /// Create a new WalrusConfig with default values
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Set the publisher URL
-    pub fn with_publisher_url(mut self, url: Option<String>) -> Self {
-        self.publisher_url = url;
-        self
     }
 
     /// Set the aggregator URL
@@ -140,65 +128,58 @@ impl WalrusConfig {
         self
     }
 
-    /// Build a WalrusClient with the configured settings.
+    /// Build a client for aggregator requests without publisher credentials.
     ///
-    /// URL resolution order (per side, publisher and aggregator):
-    ///   1. Explicit value passed via `with_*_url`
-    ///   2. Env var (`WALRUS_PUBLISHER_URL` / `WALRUS_AGGREGATOR_URL`)
-    ///   3. SDK defaults (public Walrus endpoints)
+    /// URL resolution order:
+    ///   1. Explicit value passed via `with_aggregator_url`
+    ///   2. Env var (`WALRUS_AGGREGATOR_URL`)
+    ///   3. SDK default aggregator
     ///
-    /// Under [`TargetPolicy::PublicOnly`] each URL supplied through `with_*_url`
+    /// Under [`TargetPolicy::PublicOnly`] a URL supplied through `with_aggregator_url`
     /// is looked up, refused unless every address it answers with is public, and
     /// pinned onto the HTTP client. Pinning is what makes the check binding:
     /// without it the connection does its own lookup, and a name with alternating
     /// records passes the check and then connects to the private address.
-    ///
-    /// Only the publisher URL configured by the operator can receive an OIDC
-    /// ID token. Publisher requests use `X-Serverless-Authorization`; aggregator
-    /// requests use a separate client without that header.
     pub async fn build(self) -> Result<WalrusClient, EndpointError> {
-        // Only `with_*_url` values are checked — those are the input ports. The
-        // env vars and SDK defaults are deployment configuration, and an operator
-        // pointing the tool at a publisher inside their own network is a
-        // legitimate setup, not the attack this guards against.
+        // Only the input port needs the public destination policy. An operator
+        // may configure an aggregator inside the deployment network.
         let mut pins: Vec<(String, Vec<SocketAddr>)> = Vec::new();
         if self.target_policy == TargetPolicy::PublicOnly {
-            for url in [
-                self.publisher_url.as_deref(),
-                self.aggregator_url.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
+            if let Some(url) = self.aggregator_url.as_deref() {
                 if let Some(pin) = resolve_public_endpoint(url).await? {
                     pins.push(pin);
                 }
             }
         }
 
-        let configured_publisher = std::env::var(ENV_PUBLISHER_URL).ok();
-        let publisher_url = self.publisher_url.or_else(|| configured_publisher.clone());
         let aggregator_url = self
             .aggregator_url
             .or_else(|| std::env::var(ENV_AGGREGATOR_URL).ok());
 
-        let audience = publisher_url
-            .as_deref()
-            .and_then(|url| publisher_auth_audience(url, configured_publisher.as_deref()));
-        let publisher_client = build_http_client(audience, &pins).await?;
         let aggregator_client = build_http_client(None, &pins).await?;
 
-        let mut client_builder = WalrusClient::builder()
-            .with_client(aggregator_client)
-            .with_publisher_client(publisher_client);
-        if let Some(ref url) = publisher_url {
-            client_builder = client_builder.with_publisher_url(url);
-        }
+        let mut client_builder = WalrusClient::builder().with_client(aggregator_client);
         if let Some(ref url) = aggregator_url {
             client_builder = client_builder.with_aggregator_url(url);
         }
         Ok(client_builder.build())
     }
+}
+
+/// Build an upload client using only the publisher configured by the operator.
+pub async fn publisher_client() -> Result<WalrusClient, EndpointError> {
+    let publisher_url = std::env::var(ENV_PUBLISHER_URL)
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| EndpointError::new("WALRUS_PUBLISHER_URL must be set for uploads"))?;
+    let publisher_client = build_http_client(Some(&publisher_url), &[]).await?;
+    let aggregator_client = build_http_client(None, &[]).await?;
+
+    Ok(WalrusClient::builder()
+        .with_publisher_url(&publisher_url)
+        .with_client(aggregator_client)
+        .with_publisher_client(publisher_client)
+        .build())
 }
 
 /// Build a client pinned to `pins` with an optional configured publisher token
@@ -260,11 +241,6 @@ async fn build_http_client(
     // publisher container.
     headers.insert(X_SERVERLESS_AUTHORIZATION.clone(), value);
     finish(pinned().default_headers(headers))
-}
-
-// Only an endpoint selected by the operator may receive the service identity.
-fn publisher_auth_audience<'a>(url: &'a str, configured: Option<&str>) -> Option<&'a str> {
-    (configured == Some(url) && is_cloud_run_url(url)).then_some(url)
 }
 
 /// True if the URL's **host** is a Google Cloud Run service hostname
@@ -396,7 +372,57 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use {super::*, std::ffi::OsString, tokio::sync::Mutex};
+
+    pub(super) static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    /// Restore deployment settings even when a test fails.
+    pub(crate) struct WalrusEnv {
+        previous: [(String, Option<OsString>); 2],
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl WalrusEnv {
+        pub(crate) async fn new(publisher: Option<&str>, aggregator: Option<&str>) -> Self {
+            let guard = ENV_LOCK.lock().await;
+            let previous = [
+                (ENV_PUBLISHER_URL, publisher),
+                (ENV_AGGREGATOR_URL, aggregator),
+            ]
+            .map(|(key, value)| {
+                let previous = std::env::var_os(key);
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+                (key.to_string(), previous)
+            });
+            Self {
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for WalrusEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::{
+        test_support::{WalrusEnv, ENV_LOCK},
+        *,
+    };
     #[tokio::test]
     async fn sdk_keeps_publisher_credentials_out_of_all_aggregator_requests() {
         let mut publisher = mockito::Server::new_async().await;
@@ -461,28 +487,6 @@ mod tests {
         assert!(sdk.upload_bytes(b"{}".to_vec(), 1, None).await.is_err());
         response.assert_async().await;
     }
-
-    #[test]
-    fn caller_chosen_publishers_do_not_receive_service_credentials() {
-        let configured = "https://publisher.run.app";
-        assert_eq!(
-            super::publisher_auth_audience(configured, Some(configured)),
-            Some(configured)
-        );
-        assert_eq!(
-            super::publisher_auth_audience("https://caller.run.app", Some(configured)),
-            None
-        );
-        assert_eq!(
-            super::publisher_auth_audience("https://caller.run.app", None),
-            None
-        );
-    }
-
-    use {super::*, tokio::sync::Mutex};
-
-    /// Serializes tests that mutate process-global env vars.
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[test]
     fn cloud_run_url_detection() {
@@ -613,41 +617,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_with_no_input_no_env() {
-        let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(ENV_PUBLISHER_URL);
-        std::env::remove_var(ENV_AGGREGATOR_URL);
-
-        // No publisher_url, no aggregator_url, no env vars → SDK defaults are used.
-        let _client = WalrusConfig::new().build().await;
+    async fn reads_can_build_without_deployment_configuration() {
+        let _env = WalrusEnv::new(None, None).await;
+        WalrusConfig::new().build().await.unwrap();
     }
 
     #[tokio::test]
-    async fn build_uses_env_var_when_input_missing() {
-        let _guard = ENV_LOCK.lock().await;
-        std::env::set_var(ENV_PUBLISHER_URL, "https://env-publisher.example.com");
-        std::env::set_var(ENV_AGGREGATOR_URL, "https://env-aggregator.example.com");
-
-        // Both env-var fallback branches are exercised.
-        let _client = WalrusConfig::new().build().await;
-
-        std::env::remove_var(ENV_PUBLISHER_URL);
-        std::env::remove_var(ENV_AGGREGATOR_URL);
-    }
-
-    #[tokio::test]
-    async fn build_input_overrides_env_var() {
-        let _guard = ENV_LOCK.lock().await;
-        std::env::set_var(ENV_PUBLISHER_URL, "https://env-publisher.example.com");
-
-        // Explicit input should win over env var.
-        let _client = WalrusConfig::new()
-            .with_publisher_url(Some("https://input-publisher.example.com".to_string()))
-            .with_aggregator_url(Some("https://input-aggregator.example.com".to_string()))
-            .build()
+    async fn reads_use_the_configured_aggregator_without_a_publisher() {
+        let mut aggregator = mockito::Server::new_async().await;
+        let _env = WalrusEnv::new(None, Some(&aggregator.url())).await;
+        let read = aggregator
+            .mock("GET", "/v1/blobs/blob")
+            .match_header("x-serverless-authorization", mockito::Matcher::Missing)
+            .with_body("data")
+            .create_async()
             .await;
 
-        std::env::remove_var(ENV_PUBLISHER_URL);
+        let client = WalrusConfig::new().build().await.unwrap();
+        assert_eq!(client.read_file("blob").await.unwrap(), b"data");
+        read.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn aggregator_input_overrides_deployment_configuration() {
+        let _env = WalrusEnv::new(None, Some("http://unused.invalid")).await;
+        let mut aggregator = mockito::Server::new_async().await;
+        let read = aggregator
+            .mock("GET", "/v1/blobs/blob")
+            .with_body("data")
+            .create_async()
+            .await;
+        let client = WalrusConfig::new()
+            .with_aggregator_url(Some(aggregator.url()))
+            .with_target_policy(TargetPolicy::Unrestricted)
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(client.read_file("blob").await.unwrap(), b"data");
+        read.assert_async().await;
     }
 
     // --- Publisher retry classifier & helper ---

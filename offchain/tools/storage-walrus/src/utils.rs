@@ -1,11 +1,9 @@
 //! Input validation policy for the Walrus tools.
 //!
-//! Anyone who can submit a DAG controls `publisher_url` / `aggregator_url` and
-//! `upload-file`'s `file_path`. Picking your own Walrus endpoint is the point of
-//! the URL ports, so they stay open to any public `https` endpoint and closed to
-//! the private side of the network — the cloud metadata server, the container's
-//! loopback, the VPC. `file_path` has no such legitimate use on a hosted tool
-//! and is off unless an upload root is configured.
+//! Publishers are chosen only through deployment configuration. A DAG can
+//! choose an `aggregator_url` for reads and `upload-file`'s `file_path`.
+//! Aggregator inputs accept public `https` endpoints and exclude private
+//! destinations. File uploads are disabled unless an upload root is configured.
 //!
 //! The endpoint policy is in two parts because refusing `169.254.169.254` and
 //! `metadata.google.internal` by name is a one-line bypass away from useless:
