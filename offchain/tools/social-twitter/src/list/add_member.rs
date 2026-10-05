@@ -153,8 +153,13 @@ impl NexusTool for AddMember {
 
                 // Parse the list data
                 match serde_json::from_value::<ListMemberResponse>(json) {
-                    Ok(list_data) => Output::Ok {
-                        is_member: list_data.data.unwrap().is_member,
+                    Ok(list_data) => match list_data.data {
+                        Some(data) => Output::Ok {
+                            is_member: data.is_member,
+                        },
+                        None => Output::Err {
+                            reason: "Twitter response is missing membership data".to_string(),
+                        },
                     },
                     Err(e) => Output::Err {
                         reason: format!("Failed to parse list data: {}", e),
@@ -170,6 +175,21 @@ impl NexusTool for AddMember {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn missing_membership_data_returns_an_error() {
+        let (mut server, tool) = create_server_and_tool().await;
+        let response = server
+            .mock("POST", "/lists/test_list_id/members")
+            .with_body("{}")
+            .create_async()
+            .await;
+        assert!(matches!(
+            tool.invoke(create_test_input()).await,
+            Output::Err { .. }
+        ));
+        response.assert_async().await;
+    }
+
     use {super::*, ::mockito::Server, serde_json::json};
 
     impl AddMember {

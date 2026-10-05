@@ -1,11 +1,9 @@
 //! Input validation policy for the Walrus tools.
 //!
-//! Anyone who can submit a DAG controls `publisher_url` / `aggregator_url` and
-//! `upload-file`'s `file_path`. Picking your own Walrus endpoint is the point of
-//! the URL ports, so they stay open to any public `https` endpoint and closed to
-//! the private side of the network — the cloud metadata server, the container's
-//! loopback, the VPC. `file_path` has no such legitimate use on a hosted tool
-//! and is off unless an upload root is configured.
+//! Publishers are chosen only through deployment configuration. A DAG can
+//! choose an `aggregator_url` for reads and `upload-file`'s `file_path`.
+//! Aggregator inputs accept public `https` endpoints and exclude private
+//! destinations. File uploads are disabled unless an upload root is configured.
 //!
 //! The endpoint policy is in two parts because refusing `169.254.169.254` and
 //! `metadata.google.internal` by name is a one-line bypass away from useless:
@@ -27,10 +25,6 @@ pub mod validation {
 
     /// Unset (the default) refuses local-path uploads entirely.
     const ENV_UPLOAD_ROOT: &str = "WALRUS_UPLOAD_ROOT";
-
-    /// `.internal` is where the GCE metadata server lives.
-    const PRIVATE_DOMAIN_SUFFIXES: &[&str] =
-        &[".internal", ".local", ".localhost", ".home.arpa", ".arpa"];
 
     /// Keeps a caller from parking a request on an unresponsive resolver for the
     /// whole tool timeout.
@@ -95,53 +89,112 @@ pub mod validation {
             ));
         }
 
-        let Some(host) = url.host_str() else {
-            return Err(EndpointError("endpoint must have a host".to_string()));
-        };
-        check_endpoint_host(host)
+        let host = url
+            .host_str()
+            .ok_or_else(|| EndpointError("endpoint must have a host".to_string()))?;
+        check_endpoint_host(host).map_err(|error| EndpointError(error.to_string()))
     }
 
-    /// The hosts that can be refused without resolving them.
-    ///
-    /// The single-label rule is the non-obvious one: a bare `metadata` resolves
-    /// through the container's DNS search list, which on GCE ends at
-    /// `google.internal`, so a name with no dot in it reaches the metadata
-    /// server.
-    fn check_endpoint_host(host: &str) -> Result<(), EndpointError> {
+    fn check_endpoint_host(host: &str) -> Result<(), &'static str> {
         if let Some(ip) = host_as_ip(host) {
             return if is_public_ip(ip) {
                 Ok(())
             } else {
-                Err(EndpointError(format!(
-                    "endpoint address `{ip}` is not a public address"
-                )))
+                Err("Private destinations are disabled")
             };
         }
-
-        // The root label is significant to `Url` but not to the resolver, so
-        // `metadata.google.internal.` has to be read as `metadata.google.internal`.
-        let host = host.to_ascii_lowercase();
-        let host = host.strip_suffix('.').unwrap_or(&host);
-        if host == "localhost" {
-            return Err(EndpointError(
-                "endpoint host `localhost` is not a public host".to_string(),
-            ));
-        }
-        if let Some(suffix) = PRIVATE_DOMAIN_SUFFIXES
-            .iter()
-            .find(|suffix| host.ends_with(*suffix))
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        // Names without a dot use DNS search domains and can reach metadata services.
+        if !host.contains('.')
+            || [".internal", ".local", ".localhost", ".arpa"]
+                .iter()
+                .any(|suffix| host.ends_with(suffix))
         {
-            return Err(EndpointError(format!(
-                "endpoint host `{host}` is in the internal domain `{suffix}`"
-            )));
+            return Err("Private destinations are disabled");
         }
-        if !host.contains('.') {
-            return Err(EndpointError(format!(
-                "endpoint host `{host}` is a single-label name,                  which resolves through the local search domain"
-            )));
+        Ok(())
+    }
+
+    /// Whether an address is permitted by the public destination policy.
+    /// Special purpose ranges are conservatively excluded.
+    fn is_public_ip(addr: IpAddr) -> bool {
+        match addr {
+            IpAddr::V4(ip) => is_public_ipv4(ip),
+            IpAddr::V6(ip) => is_public_ipv6(ip),
+        }
+    }
+
+    fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+        let o = ip.octets();
+        !(ip.is_loopback()
+            || ip.is_private()
+            // 169.254.0.0/16 link-local, where every cloud metadata server lives
+            || ip.is_link_local()
+            || ip.is_multicast()
+            || ip.is_documentation()
+            // 0.0.0.0/8 "this network", which includes the unspecified address
+            || o[0] == 0
+            // 100.64.0.0/10 carrier-grade NAT
+            || (o[0] == 100 && (o[1] & 0xc0) == 64)
+            // 192.0.0.0/24 IETF protocol assignments
+            || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+            // 192.88.99.0/24 former 6to4 relay anycast
+            || (o[0] == 192 && o[1] == 88 && o[2] == 99)
+            // 198.18.0.0/15 benchmarking
+            || (o[0] == 198 && (o[1] & 0xfe) == 18)
+            // 240.0.0.0/4 reserved, up to and including the broadcast address
+            || o[0] >= 240)
+    }
+
+    fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+        // A v6 address carrying a v4 one reaches that v4 address, so the v4
+        // ranges are what decide.
+        if let Some(v4) = embedded_ipv4(ip) {
+            return is_public_ipv4(v4);
         }
 
-        Ok(())
+        let s = ip.segments();
+        // Limit native IPv6 to global unicast, excluding special purpose ranges.
+        // https://www.iana.org/assignments/iana-ipv6-special-registry/
+        if (s[0] & 0xe000) != 0x2000 {
+            return false;
+        }
+        // 2001::/23 protocol assignments, including Teredo and benchmarking
+        !((s[0] == 0x2001 && s[1] < 0x0200)
+            // 2001:db8::/32 documentation
+            || (s[0] == 0x2001 && s[1] == 0x0db8)
+            // 3fff::/20 documentation
+            || (s[0] == 0x3fff && (s[1] & 0xf000) == 0))
+    }
+
+    /// The v4 address a v6 address stands in for, across the mapped, compatible,
+    /// 6to4 and NAT64 forms.
+    fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+        // Both ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible).
+        if let Some(v4) = ip.to_ipv4() {
+            return Some(v4);
+        }
+
+        let s = ip.segments();
+        let embedded = |hi: u16, lo: u16| {
+            Ipv4Addr::new(
+                (hi >> 8) as u8,
+                (hi & 0xff) as u8,
+                (lo >> 8) as u8,
+                (lo & 0xff) as u8,
+            )
+        };
+
+        // 2002::/16 6to4
+        if s[0] == 0x2002 {
+            return Some(embedded(s[1], s[2]));
+        }
+        // 64:ff9b::/96 NAT64
+        if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+            return Some(embedded(s[6], s[7]));
+        }
+
+        None
     }
 
     /// Resolve `raw`'s host, refusing it unless every address it answers with is
@@ -153,6 +206,7 @@ pub mod validation {
     pub(crate) async fn resolve_public_endpoint(
         raw: &str,
     ) -> Result<Option<(String, Vec<SocketAddr>)>, EndpointError> {
+        check_endpoint_url(raw)?;
         let url = Url::parse(raw).map_err(|e| EndpointError(e.to_string()))?;
         let Some(host) = url.host_str() else {
             return Err(EndpointError("endpoint must have a host".to_string()));
@@ -195,88 +249,6 @@ pub mod validation {
             .unwrap_or(host)
             .parse()
             .ok()
-    }
-
-    /// True if `addr` is routable on the public internet. The ranges are spelled
-    /// out because `IpAddr::is_global` is still unstable.
-    pub(crate) fn is_public_ip(addr: IpAddr) -> bool {
-        match addr {
-            IpAddr::V4(ip) => is_public_ipv4(ip),
-            IpAddr::V6(ip) => is_public_ipv6(ip),
-        }
-    }
-
-    fn is_public_ipv4(ip: Ipv4Addr) -> bool {
-        let o = ip.octets();
-        !(ip.is_loopback()
-            || ip.is_private()
-            // 169.254.0.0/16 link-local, where every cloud metadata server lives
-            || ip.is_link_local()
-            || ip.is_multicast()
-            || ip.is_documentation()
-            // 0.0.0.0/8 "this network", which includes the unspecified address
-            || o[0] == 0
-            // 100.64.0.0/10 carrier-grade NAT
-            || (o[0] == 100 && (o[1] & 0xc0) == 64)
-            // 192.0.0.0/24 IETF protocol assignments
-            || (o[0] == 192 && o[1] == 0 && o[2] == 0)
-            // 192.88.99.0/24 former 6to4 relay anycast
-            || (o[0] == 192 && o[1] == 88 && o[2] == 99)
-            // 198.18.0.0/15 benchmarking
-            || (o[0] == 198 && (o[1] & 0xfe) == 18)
-            // 240.0.0.0/4 reserved, up to and including the broadcast address
-            || o[0] >= 240)
-    }
-
-    fn is_public_ipv6(ip: Ipv6Addr) -> bool {
-        // A v6 address carrying a v4 one reaches that v4 address, so the v4
-        // ranges are what decide.
-        if let Some(v4) = embedded_ipv4(ip) {
-            return is_public_ipv4(v4);
-        }
-
-        let s = ip.segments();
-        !(ip.is_unspecified()
-            || ip.is_loopback()
-            || ip.is_multicast()
-            // fc00::/7 unique local
-            || (s[0] & 0xfe00) == 0xfc00
-            // fe80::/10 link-local
-            || (s[0] & 0xffc0) == 0xfe80
-            // 2001:db8::/32 documentation
-            || (s[0] == 0x2001 && s[1] == 0x0db8)
-            // 100::/64 discard-only
-            || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0))
-    }
-
-    /// The v4 address a v6 address stands in for, across the mapped, compatible,
-    /// 6to4 and NAT64 forms.
-    fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
-        // Both ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible).
-        if let Some(v4) = ip.to_ipv4() {
-            return Some(v4);
-        }
-
-        let s = ip.segments();
-        let embedded = |hi: u16, lo: u16| {
-            Ipv4Addr::new(
-                (hi >> 8) as u8,
-                (hi & 0xff) as u8,
-                (lo >> 8) as u8,
-                (lo & 0xff) as u8,
-            )
-        };
-
-        // 2002::/16 6to4
-        if s[0] == 0x2002 {
-            return Some(embedded(s[1], s[2]));
-        }
-        // 64:ff9b::/96 NAT64
-        if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
-            return Some(embedded(s[6], s[7]));
-        }
-
-        None
     }
 
     /// [`resolve_upload_path_in`] with the root read from the environment.
@@ -495,6 +467,15 @@ pub mod validation {
                 "ff02::1",
                 "2001:db8::1",
                 "100::1",
+                "fec0::1",
+                "64:ff9b:1::a9fe:a9fe",
+                "2001::1",
+                "2001:2::1",
+                "3fff::1",
+                "5f00::1",
+                "64:ff9b::a9fe:a9fe",
+                "2002:a9fe:a9fe::1",
+                "::ffff:169.254.169.254",
             ] {
                 let ip: IpAddr = addr.parse().unwrap();
                 assert!(!is_public_ip(ip), "expected {addr} to be non-public");
@@ -519,10 +500,7 @@ pub mod validation {
                 .await
                 .unwrap_err()
                 .to_string();
-            assert!(
-                err.contains("does not resolve to a public address"),
-                "{err}"
-            );
+            assert!(err.contains("Private destinations are disabled"), "{err}");
             // The reason reaches the DAG author, so it must not name the address.
             assert!(!err.contains("127.0.0.1"), "{err}");
         }

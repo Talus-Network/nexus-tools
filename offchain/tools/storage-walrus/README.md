@@ -8,15 +8,7 @@ Standard Nexus Tool that uploads a JSON file to Walrus and returns the blob ID.
 
 The JSON data to upload.
 
-_opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
-
-The Walrus publisher URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
-
-_opt_ **`aggregator_url`: [`Option<String>`]** _default_: [`None`]
-
-The Walrus aggregator URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
-
-_opt_ **`epochs`: [`u64`]** _default_: [`1`]
+_opt_ **`epochs`: [`u8`]** _default_: [`1`]
 
 Number of epochs to store the data.
 
@@ -65,11 +57,7 @@ Standard Nexus Tool that uploads a file to Walrus and returns the blob ID.
 
 The path of the file to upload, relative to `WALRUS_UPLOAD_ROOT`. Uploading from a local path is **disabled** unless that variable is set. See [Local file uploads](#local-file-uploads).
 
-_opt_ **`publisher_url`: [`Option<String>`]** _default_: [`None`]
-
-The Walrus publisher URL. Must be a public `https` endpoint with no query, fragment or credentials. If not provided, the default Walrus configuration will be used. See [Endpoint targets](#endpoint-targets).
-
-_opt_ **`epochs`: [`u64`]** _default_: [`1`]
+_opt_ **`epochs`: [`u8`]** _default_: [`1`]
 
 Number of epochs to store the file.
 
@@ -228,49 +216,43 @@ An error occurred during verification.
 
 # Configuration
 
+## Publisher configuration
+
+Uploads use the publisher selected by the operator through
+**`WALRUS_PUBLISHER_URL`**. This setting is required: an unset or blank value
+returns an error before an upload is attempted. There is no default publisher,
+including on testnet. Operators must configure the publisher for their intended
+network.
+
+Users supply the data, retention epochs, and optional recipient. Upload inputs
+cannot select a publisher or aggregator. Uploads do not need an aggregator.
+
 ## Endpoint targets
 
-`publisher_url` and `aggregator_url` are caller-supplied. Pointing them at an
-aggregator of your own is the point of having them, so any **public** `https`
-endpoint is accepted, on any port. What is refused is `http` and the private side
-of the network: the cloud metadata server, the container's own loopback, and the
-VPC the tool sits in.
+Read and verification tools still accept `aggregator_url`. Its resolution order
+is the input port, then `WALRUS_AGGREGATOR_URL`, then the SDK testnet aggregator.
+Operators must configure the aggregator for other networks.
 
-That is enforced in two places, because refusing `169.254.169.254` and
-`metadata.google.internal` by name is a one-line bypass away from useless — any
-public name can carry a private address:
+An aggregator supplied through an input port must use public `https` with no
+credentials, query, or fragment. Validation rejects private addresses and internal
+hostnames, checks every resolved address, and pins the accepted addresses to the
+HTTP client. Redirects are disabled so a validated destination cannot redirect a
+request into the private network. URL paths and public ports are supported.
 
-- While the input is deserialized: a non-public IP literal, an internal domain
-  suffix (`.internal`, `.local`, `.localhost`, `.home.arpa`, `.arpa`), or a
-  single-label name. The last one matters because a bare `metadata` resolves
-  through the container's DNS search list, which on GCE ends at
-  `google.internal`.
-- While the client is built: the host is resolved, refused unless every address
-  it answers with is public, and then **pinned** onto the HTTP client. Pinning
-  is what makes the check binding — without it the connection does its own
-  lookup, and a name with alternating records passes the check and then connects
-  to the private address.
+Deployment settings are trusted operator configuration and may point to services
+inside the deployment network. The public destination policy applies to input
+ports.
 
-**Redirects are refused, not followed.** A DNS pin binds only the host it names,
-so a redirect is the one way a request can leave the host that was checked. A
-validated public endpoint answering `302 Location: http://127.0.0.1/…` would
-otherwise be fetched and its body handed back. Walrus publishers and aggregators
-serve their blob routes directly, so nothing legitimate needs a redirect; one
-surfaces as an API error carrying the 3xx status.
+## Migration
 
-A URL must also carry no query, fragment or credentials. The SDK builds request
-URLs by concatenation (`{base}/v1/blobs/{id}`), so a base ending in `#` or `?`
-swallows everything appended to it and turns a blob read into a request for the
-host's root. A path is fine and concatenates as expected, so an aggregator
-served under a prefix works.
+The upload schemas no longer contain `publisher_url`, and the JSON upload schema
+no longer contains `aggregator_url`. Supplying either removed input is rejected,
+including a value of `null`.
 
-Community aggregators that are only reachable over `http` cannot be used. Blob
-contents and blob IDs would otherwise cross the network in the clear, and a
-plaintext hop is a place for someone to substitute what the tool reads.
-
-Only values passed through the input ports are checked. `WALRUS_PUBLISHER_URL`
-and `WALRUS_AGGREGATOR_URL` are deployment configuration, and an operator
-pointing the tool at a publisher inside their own network is a legitimate setup.
+The deployment pipeline derives tool versions from their source and shared build
+inputs, so this schema change receives a new tool version. Before moving a
+workflow to that version, configure `WALRUS_PUBLISHER_URL` on the tool service and
+remove the deleted ports from the workflow.
 
 ## Local file uploads
 

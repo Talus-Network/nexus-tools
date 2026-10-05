@@ -36,24 +36,161 @@ pub(crate) enum Output {
     Err { reason: String },
 }
 
-/// Helper function to render a variable expression using MiniJinja
-fn render_variable_expression(expr: &str, var_name: &str, value: &str) -> String {
-    let mut temp_env = Environment::new();
+const MAX_INPUT_BYTES: usize = 65_536;
+const MAX_OUTPUT_BYTES: usize = 1_048_576;
+const MAX_EXPRESSIONS: usize = 256;
 
-    // Try to render with MiniJinja
-    if temp_env.add_template("temp", expr).is_ok() {
-        if let Ok(tmpl) = temp_env.get_template("temp") {
-            let mut ctx = HashMap::new();
-            ctx.insert(var_name.to_string(), value.to_string());
-
-            if let Ok(rendered) = tmpl.render(ctx) {
-                return rendered;
+// Check intermediate string sizes before MiniJinja evaluates an expression.
+// Fuel and a bounded output buffer alone cannot stop `value * huge_number`
+// from allocating its intermediate string.
+fn expression_bound(
+    expr: &minijinja::machinery::ast::Expr<'_>,
+    args: &HashMap<String, String>,
+    depth: usize,
+) -> Result<Option<usize>, String> {
+    use minijinja::machinery::ast::{BinOpKind, CallArg, Expr};
+    if depth > 32 {
+        return Err("Template expression is too deeply nested".into());
+    }
+    let bound = |expr: &Expr<'_>| expression_bound(expr, args, depth + 1);
+    let size = match expr {
+        Expr::Var(value) => args.get(value.id).map(String::len),
+        Expr::Const(value) => Some(value.value.to_string().len()),
+        Expr::BinOp(value) => {
+            let left = bound(&value.left)?;
+            let right = bound(&value.right)?;
+            match value.op {
+                BinOpKind::Concat | BinOpKind::Add => {
+                    left.zip(right).map(|(a, b)| a.saturating_add(b))
+                }
+                BinOpKind::Mul => {
+                    let count = |expr: &Expr<'_>| match expr {
+                        Expr::Const(value) => {
+                            value.value.as_i64().and_then(|n| usize::try_from(n).ok())
+                        }
+                        _ => None,
+                    };
+                    if let Some(n) = count(&value.right) {
+                        left.map(|size| size.saturating_mul(n))
+                    } else if let Some(n) = count(&value.left) {
+                        right.map(|size| size.saturating_mul(n))
+                    } else {
+                        return Err("Repetition requires a nonnegative integer literal".into());
+                    }
+                }
+                _ => return Err("Unsupported template operator".into()),
             }
         }
+        Expr::Filter(filter) => {
+            let Some(expr) = filter.expr.as_ref() else {
+                return Err("Missing filter input".into());
+            };
+            let input = bound(expr)?;
+            let mut arguments = Vec::new();
+            for argument in &filter.args {
+                let CallArg::Pos(expr) = argument else {
+                    return Err("Only positional filter arguments are supported".into());
+                };
+                arguments.push(bound(expr)?);
+            }
+            match filter.name {
+                "upper" | "lower" | "capitalize" | "title" if arguments.is_empty() => {
+                    input.map(|n| n.saturating_mul(3))
+                }
+                "trim" if arguments.len() <= 1 => input,
+                "length" | "count" if arguments.is_empty() => input.map(|_| 20),
+                "escape" | "e" | "tojson" if arguments.is_empty() => {
+                    input.map(|n| n.saturating_mul(6).saturating_add(2))
+                }
+                "default" | "d" if arguments.len() <= 2 => input
+                    .zip(arguments.first().copied().flatten().or(Some(0)))
+                    .map(|(a, b)| a.max(b)),
+                "replace" if (2..=3).contains(&arguments.len()) => {
+                    input.zip(arguments[1]).map(|(n, replacement)| {
+                        n.saturating_add(1)
+                            .saturating_mul(replacement.saturating_add(1))
+                    })
+                }
+                _ => {
+                    return Err(format!(
+                        "Unsupported template filter or arguments: {}",
+                        filter.name
+                    ))
+                }
+            }
+        }
+        _ => return Err("Unsupported template expression".into()),
+    };
+    if size.is_some_and(|size| size > MAX_OUTPUT_BYTES) {
+        return Err("Template expression exceeds the output limit".into());
     }
+    Ok(size)
+}
 
-    // If rendering fails, return original expression
-    expr.to_string()
+fn render(template: &str, args: &HashMap<String, String>) -> Result<String, String> {
+    use minijinja::machinery::{parse_expr, tokenize, Token};
+    let input_size = args.iter().fold(template.len(), |size, (key, value)| {
+        size.saturating_add(key.len()).saturating_add(value.len())
+    });
+    if input_size > MAX_INPUT_BYTES || args.len() > 128 {
+        return Err("Template input exceeds the size limit".into());
+    }
+    let mut env = Environment::new();
+    env.set_fuel(Some(10_000));
+    env.set_recursion_limit(32);
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    let mut result = String::new();
+    let mut expression_start = None;
+    let mut expression_count = 0;
+    for token in tokenize(template, false, Default::default(), Default::default()) {
+        let (token, span) = token.map_err(|e| format!("Template syntax error: {e}"))?;
+        let piece = match token {
+            Token::TemplateData(text) => Some(text.to_string()),
+            Token::VariableStart => {
+                expression_start = Some((span.start_offset as usize, span.end_offset as usize));
+                None
+            }
+            Token::VariableEnd => {
+                let Some((start, inner)) = expression_start.take() else {
+                    return Err("Unexpected end of expression".into());
+                };
+                expression_count += 1;
+                if expression_count > MAX_EXPRESSIONS {
+                    return Err("Too many template expressions".into());
+                }
+                let expression = &template[inner..span.start_offset as usize];
+                let ast =
+                    parse_expr(expression).map_err(|e| format!("Template syntax error: {e}"))?;
+                if expression_bound(&ast, args, 0)?.is_none() {
+                    Some(template[start..span.end_offset as usize].to_string())
+                } else {
+                    let expression = env
+                        .compile_expression(expression)
+                        .map_err(|e| format!("Template syntax error: {e}"))?;
+                    Some(
+                        expression
+                            .eval(args)
+                            .map_err(|e| format!("Template rendering failed: {e}"))?
+                            .to_string(),
+                    )
+                }
+            }
+            Token::BlockStart => {
+                return Err("Template blocks are unsupported; use variable expressions".into())
+            }
+            _ => None,
+        };
+        if let Some(piece) = piece {
+            if result.len().saturating_add(piece.len()) > MAX_OUTPUT_BYTES {
+                return Err("Template output exceeds the size limit".into());
+            }
+            result.push_str(&piece);
+        }
+    }
+    if expression_start.is_some() {
+        return Err("Unclosed template expression".into());
+    }
+    Ok(result)
 }
 
 pub(crate) struct TemplatingJinja;
@@ -86,8 +223,6 @@ impl NexusTool for TemplatingJinja {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        let mut env = Environment::new();
-
         let mut all_args = input.args;
 
         // Validate: if name or value is provided, both must be provided
@@ -110,78 +245,46 @@ impl NexusTool for TemplatingJinja {
             };
         }
 
-        env.set_undefined_behavior(minijinja::UndefinedBehavior::Chainable);
-
-        // First, validate template syntax by attempting to add it
-        match env.add_template("tmpl", &input.template) {
-            Ok(_) => {}
-            Err(e) => {
-                return Output::Err {
-                    reason: format!("Template syntax error: {}", e),
-                };
-            }
+        match render(&input.template, &all_args) {
+            Ok(result) => Output::Ok { result },
+            Err(reason) => Output::Err { reason },
         }
-
-        // Parse template and handle variables with optional whitespace
-        let mut result = input.template.clone();
-
-        for (var_name, value) in &all_args {
-            let mut new_result = String::new();
-            let mut remaining = result.as_str();
-
-            while let Some(start_pos) = remaining.find("{{") {
-                // Add everything before {{
-                new_result.push_str(&remaining[..start_pos]);
-
-                // Look for closing }}
-                let after_open = &remaining[start_pos + 2..];
-                if let Some(end_pos) = after_open.find("}}") {
-                    let content = &after_open[..end_pos];
-                    let trimmed = content.trim();
-
-                    // Check if this variable matches (with optional filters/spaces)
-                    let matches = trimmed == var_name
-                        || trimmed.starts_with(&format!("{} ", var_name))
-                        || trimmed.starts_with(&format!("{}|", var_name))
-                        || trimmed.starts_with(&format!("{} |", var_name));
-
-                    if matches {
-                        // Extract filter part if any
-                        let filter_part = if trimmed.len() > var_name.len() {
-                            &trimmed[var_name.len()..]
-                        } else {
-                            ""
-                        };
-
-                        let expr = format!("{{{{{}{}}}}}", var_name, filter_part);
-                        let rendered = render_variable_expression(&expr, var_name, value);
-                        new_result.push_str(&rendered);
-                    } else {
-                        // Not our variable, keep original
-                        new_result.push_str("{{");
-                        new_result.push_str(content);
-                        new_result.push_str("}}");
-                    }
-
-                    remaining = &after_open[end_pos + 2..];
-                } else {
-                    // No closing }}, keep original
-                    new_result.push_str("{{");
-                    remaining = after_open;
-                }
-            }
-
-            // Add remaining text
-            new_result.push_str(remaining);
-            result = new_result;
-        }
-
-        Output::Ok { result }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expressions_use_the_complete_context_once() {
+        let args = HashMap::from([("a".into(), "A".into()), ("b".into(), "B".into())]);
+        assert_eq!(render("{{ a ~ b }}", &args).unwrap(), "AB");
+        for _ in 0..32 {
+            let args = HashMap::from([("a".into(), "{{ b }}".into()), ("b".into(), "B".into())]);
+            assert_eq!(render("{{ a }}", &args).unwrap(), "{{ b }}");
+        }
+    }
+
+    #[test]
+    fn resource_limits_apply_before_expression_allocation() {
+        let args = HashMap::from([("value".into(), "x".repeat(256))]);
+        assert!(render("{{ value * 1000000000000 }}", &args).is_err());
+        assert!(render("{{ 'x' * 1000000000000 }}", &args).is_err());
+        assert!(render("{{ value | center(1000000000000) }}", &args).is_err());
+        assert!(render("{{ range(1000000000000) | list }}", &args).is_err());
+        assert_eq!(
+            render("{{ value * 4096 }}", &args).unwrap().len(),
+            MAX_OUTPUT_BYTES
+        );
+        assert!(render("{{ value * 4096 }}x", &args).is_err());
+    }
+
+    #[test]
+    fn quoted_delimiters_and_unicode_are_rendered_correctly() {
+        let args = HashMap::from([("value".into(), "é".into())]);
+        assert_eq!(render("{{ value ~ '}}' }}", &args).unwrap(), "é}}");
+        assert_eq!(render("{{ value | tojson }}", &args).unwrap(), "\"é\"");
+    }
+
     use super::*;
 
     #[tokio::test]

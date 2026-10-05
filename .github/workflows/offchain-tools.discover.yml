@@ -13,10 +13,10 @@ on:
         description: 'JSON matrix of every discovered tool'
         value: ${{ jobs.discover.outputs.matrix-all }}
       matrix-changed:
-        description: 'JSON matrix of tools whose subtree changed since base-ref'
+        description: 'JSON matrix of tools whose source or shared build inputs changed since base-ref'
         value: ${{ jobs.discover.outputs.matrix-changed }}
       content-hash:
-        description: 'Aggregate hash of all tools.json + their subtree versions'
+        description: 'Aggregate hash of all tool versions'
         value: ${{ jobs.discover.outputs.content-hash }}
 
 jobs:
@@ -62,6 +62,12 @@ jobs:
           CHANGED='[]'
           HASH_INPUT=""
 
+          # Shared dependencies and build settings are part of every tool version.
+          # Otherwise prepare can retain an old image after a toolkit update.
+          SHARED_INPUTS=$(git ls-tree HEAD -- \
+            offchain/Cargo.toml offchain/Cargo.lock \
+            offchain/Dockerfile offchain/rust-toolchain.toml)
+
           # Shared files force every tool into the "changed" set.
           SHARED_TOUCHED=false
           if [ -n "${CHANGED_FILES:-}" ]; then
@@ -81,12 +87,6 @@ jobs:
           # the entire downstream pipeline (deploy → prepare → register
           # → tf-apply) from touching them. Flip the variable in repo
           # settings → Variables to unblock (no PR needed).
-          #
-          # Current blocks (2026-05-21):
-          #   http — no SSRF guard; would let a DAG reach the GCP
-          #          metadata server and exfiltrate an SA OAuth token.
-          #          Unregistered on chain; re-enable after the guard
-          #          ships in offchain/tools/http/.
           read -ra BLOCKED_TOOLS_ARR <<< "${BLOCKED_TOOLS:-}"
           echo "Blocked tools: ${BLOCKED_TOOLS_ARR[*]:-<none>}"
 
@@ -118,7 +118,7 @@ jobs:
             [ "$SKIP" = "true" ] && continue
 
             TREE_HASH=$(git rev-parse "HEAD:${DIR}/")
-            CONTENT_HASH=$(printf '%s' "$TREE_HASH" | sha256sum | cut -d' ' -f1)
+            CONTENT_HASH=$(printf '%s\n%s\n' "$TREE_HASH" "$SHARED_INPUTS" | sha256sum | cut -d' ' -f1)
             VERSION=$(printf '%d' "0x${CONTENT_HASH:0:8}")
 
             ENTRY=$(jq -nc \

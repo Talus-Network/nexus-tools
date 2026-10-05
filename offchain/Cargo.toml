@@ -15,28 +15,22 @@ categories = []
 
 [workspace.dependencies]
 anyhow = "1.0.102"
-base64 = "0.22.1"
 bytes = "1.11.1"
 dotenvy = "0.15.7"
 ed25519-dalek = "2.2.0"
 env_logger = "0.11.10"
 hex = "0.4.3"
+jsonschema = { version = "0.46.10", default-features = false }
 sha2 = "0.11.0"
 chrono = { version = "0.4.44", features = ["serde"] }
-jsonschema = "0.46.5"
 log = "0.4.29"
-minijinja = "2.20.0"
+minijinja = { version = "2.21.0", features = ["fuel", "json", "unstable_machinery"] }
 mockito = "1.7.2"
-portpicker = "0.1.1"
 rand = "0.8"
 reqwest = { version = "0.12.25", features = ["json", "stream", "gzip", "brotli"] }
-rstest = "0.26.1"
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-serial_test = "3.4.0"
-strum = "0.28.0"
-strum_macros = "0.28.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 url = "2.5.8"
@@ -46,17 +40,16 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # === Nexus deps ===
 [workspace.dependencies.nexus-sdk]
-features = ["full"]
 # For local dev convenience
 # path = "../../nexus-sdk/sdk"
 git = "https://github.com/Talus-Network/nexus-sdk"
-tag = "v2.0.0"
+rev = "f88f0e5e2568acaca06b1e6884585119fbada715"
 
 [workspace.dependencies.nexus-toolkit]
 # For local dev convenience
 # path = "../../nexus-sdk/toolkit-rust"
 git = "https://github.com/Talus-Network/nexus-sdk"
-tag = "v2.0.0"
+rev = "f88f0e5e2568acaca06b1e6884585119fbada715"
 
 
 [profile.release]
@@ -66,5 +59,5 @@ debug = 1
 split-debuginfo = "packed"
 # Decrease final binary size
 strip = "debuginfo"
-# Exit process with SIGABRT when any thread panics
-panic = "abort"
+# Let the toolkit contain invocation panics within the failing request.
+panic = "unwind"

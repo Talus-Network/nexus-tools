@@ -3,7 +3,7 @@
 //! Standard Nexus Tool that uploads a file to Walrus and returns the blob ID.
 
 use {
-    crate::{client::WalrusConfig, utils::validation::EndpointError},
+    crate::{client::publisher_client, utils::validation::EndpointError},
     nexus_sdk::{
         fqn,
         walrus::{StorageInfo, WalrusError},
@@ -42,12 +42,6 @@ pub enum UploadErrorKind {
 pub(crate) struct Input {
     /// The path to the file to upload
     file_path: String,
-    /// The walrus publisher URL
-    #[serde(
-        default,
-        deserialize_with = "crate::utils::validation::deserialize_url_opt"
-    )]
-    publisher_url: Option<String>,
     /// The number of epochs to store the file
     #[serde(default = "default_epochs")]
     epochs: u8,
@@ -178,10 +172,7 @@ impl UploadFile {
     async fn upload(&self, input: Input) -> Result<StorageInfo, UploadFileError> {
         let file_path = resolve_file_path(&input.file_path)?;
 
-        let walrus_client = WalrusConfig::new()
-            .with_publisher_url(input.publisher_url)
-            .build()
-            .await?;
+        let walrus_client = publisher_client().await?;
 
         let storage_info = crate::client::with_publisher_retry(|| {
             walrus_client.upload_file(&file_path, input.epochs, input.send_to.clone())
@@ -197,8 +188,8 @@ impl UploadFile {
 mod tests {
     use {
         super::*,
+        crate::client::test_support::WalrusEnv,
         mockito::Server,
-        nexus_sdk::walrus::WalrusClient,
         serde_json::json,
         tokio::sync::Mutex,
     };
@@ -250,42 +241,14 @@ mod tests {
         }
     }
 
-    // Override upload method for testing
-    impl UploadFile {
-        // Helper method for testing
-        fn with_custom_client() -> Self {
-            Self {}
-        }
-
-        async fn upload_for_test(
-            &self,
-            input: Input,
-            client: WalrusClient,
-        ) -> Result<StorageInfo, UploadFileError> {
-            let file_path = resolve_file_path(&input.file_path)?;
-
-            let storage_info = client
-                .upload_file(&file_path, input.epochs, input.send_to)
-                .await
-                .map_err(UploadFileError::UploadError)?;
-
-            Ok(storage_info)
-        }
-
-        async fn create_server_and_input(file_path: &str) -> (mockito::ServerGuard, Input) {
-            let server = Server::new_async().await;
-            let server_url = server.url();
-
-            // Set up test input with server URL
-            let input = Input {
-                file_path: file_path.to_string(),
-                publisher_url: Some(server_url.clone()),
-                epochs: 1,
-                send_to: None,
-            };
-
-            (server, input)
-        }
+    async fn create_server_and_input(file_path: &str) -> (mockito::ServerGuard, Input) {
+        let server = Server::new_async().await;
+        let input = Input {
+            file_path: file_path.to_string(),
+            epochs: 1,
+            send_to: None,
+        };
+        (server, input)
     }
 
     #[tokio::test]
@@ -294,12 +257,14 @@ mod tests {
         let _root = UploadRoot::new("newly-created", &[(file_path, "test")]).await;
 
         // Create server and input
-        let (mut server, input) = UploadFile::create_server_and_input(file_path).await;
+        let (mut server, input) = create_server_and_input(file_path).await;
+        let _env = WalrusEnv::new(Some(&server.url()), None).await;
 
         // Set up mock response for newly created blob
         let mock = server
             .mock("PUT", "/v1/blobs")
-            .match_query(mockito::Matcher::Any)
+            .match_query("epochs=1")
+            .match_body("test")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -320,24 +285,7 @@ mod tests {
             .create_async()
             .await;
 
-        // Create a client that points to our mock server
-        let walrus_client = WalrusConfig::new()
-            .with_publisher_url(Some(server.url()))
-            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
-            .build()
-            .await
-            .expect("test endpoints are unrestricted");
-
-        // Call the tool with our test client
-        let tool = UploadFile::with_custom_client();
-        let result = match tool.upload_for_test(input, walrus_client).await {
-            Ok(storage_info) => handle_successful_upload(storage_info),
-            Err(e) => Output::Err {
-                reason: e.to_string(),
-                kind: UploadErrorKind::Network,
-                status_code: None,
-            },
-        };
+        let result = UploadFile.invoke(input).await;
 
         // Verify the result
         match result {
@@ -358,9 +306,7 @@ mod tests {
                 kind,
                 status_code,
             } => {
-                assert_eq!(reason, "Neither newly created nor already certified");
-                assert_eq!(kind, UploadErrorKind::Validation);
-                assert_eq!(status_code, None);
+                panic!("unexpected upload error: {reason} ({kind:?}, {status_code:?})");
             }
         }
 
@@ -375,12 +321,14 @@ mod tests {
         let _root = UploadRoot::new("already-certified", &[(file_path, "test")]).await;
 
         // Create server and input
-        let (mut server, input) = UploadFile::create_server_and_input(file_path).await;
+        let (mut server, input) = create_server_and_input(file_path).await;
+        let _env = WalrusEnv::new(Some(&server.url()), None).await;
 
         // Set up mock response for already certified blob
         let mock = server
             .mock("PUT", "/v1/blobs")
-            .match_query(mockito::Matcher::Any)
+            .match_query("epochs=1")
+            .match_body("test")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -401,24 +349,7 @@ mod tests {
             .create_async()
             .await;
 
-        // Create a client that points to our mock server
-        let walrus_client = WalrusConfig::new()
-            .with_publisher_url(Some(server.url()))
-            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
-            .build()
-            .await
-            .expect("test endpoints are unrestricted");
-
-        // Call the tool with our test client
-        let tool = UploadFile::with_custom_client();
-        let result = match tool.upload_for_test(input, walrus_client).await {
-            Ok(storage_info) => handle_successful_upload(storage_info),
-            Err(e) => Output::Err {
-                reason: e.to_string(),
-                kind: UploadErrorKind::Network,
-                status_code: None,
-            },
-        };
+        let result = UploadFile.invoke(input).await;
 
         // Verify the result
         match result {
@@ -439,9 +370,7 @@ mod tests {
                 kind,
                 status_code,
             } => {
-                assert_eq!(reason, "Neither newly created nor already certified");
-                assert_eq!(kind, UploadErrorKind::Validation);
-                assert_eq!(status_code, None);
+                panic!("unexpected upload error: {reason} ({kind:?}, {status_code:?})");
             }
         }
 
@@ -456,12 +385,14 @@ mod tests {
         let _root = UploadRoot::new("upload-error", &[(file_path, "test")]).await;
 
         // Create server and input
-        let (mut server, input) = UploadFile::create_server_and_input(file_path).await;
+        let (mut server, input) = create_server_and_input(file_path).await;
+        let _env = WalrusEnv::new(Some(&server.url()), None).await;
 
         // Set up mock response for error
         let mock = server
             .mock("PUT", "/v1/blobs")
-            .match_query(mockito::Matcher::Any)
+            .match_query("epochs=1")
+            .match_body("test")
             .with_status(500)
             .with_header("content-type", "application/json")
             .with_body(
@@ -473,40 +404,7 @@ mod tests {
             .create_async()
             .await;
 
-        // Create a client that points to our mock server
-        let walrus_client = WalrusConfig::new()
-            .with_publisher_url(Some(server.url()))
-            .with_target_policy(crate::client::TargetPolicy::Unrestricted)
-            .build()
-            .await
-            .expect("test endpoints are unrestricted");
-
-        // Call the tool with our test client
-        let tool = UploadFile::with_custom_client();
-        let output = match tool.upload_for_test(input, walrus_client).await {
-            Ok(storage_info) => handle_successful_upload(storage_info),
-            Err(e) => {
-                let (kind, status_code) = match &e {
-                    UploadFileError::InvalidFile(_) | UploadFileError::Endpoint(_) => {
-                        (UploadErrorKind::Validation, None)
-                    }
-                    UploadFileError::UploadError(err) => {
-                        let status_code = match err {
-                            WalrusError::ApiError { status_code, .. } => Some(*status_code),
-                            _ => None,
-                        };
-
-                        (UploadErrorKind::Network, status_code)
-                    }
-                };
-
-                Output::Err {
-                    reason: e.to_string(),
-                    kind,
-                    status_code,
-                }
-            }
-        };
+        let output = UploadFile.invoke(input).await;
 
         // Verify the result
         match output {
@@ -532,12 +430,11 @@ mod tests {
     async fn invoke_expecting_validation_error(file_path: &str) -> String {
         let input = Input {
             file_path: file_path.to_string(),
-            publisher_url: None,
             epochs: 1,
             send_to: None,
         };
 
-        match UploadFile::with_custom_client().invoke(input).await {
+        match UploadFile.invoke(input).await {
             Output::Err {
                 reason,
                 kind,
@@ -590,38 +487,28 @@ mod tests {
         }
     }
 
-    /// The port is gated at deserialization, so a DAG naming a private target
-    /// never reaches `invoke`.
     #[test]
-    fn private_publishers_fail_input_deserialization() {
-        for publisher_url in [
-            "https://169.254.169.254/",
-            "https://metadata.google.internal",
-            "https://127.0.0.1:8080",
-            "https://metadata/computeMetadata/v1/",
-            // The 2026-09-30 probes, verbatim.
-            "http://169.254.169.254/#",
-            "http://metadata.google.internal/#",
-        ] {
-            let json = json!({ "file_path": "x", "publisher_url": publisher_url });
-            assert!(
-                serde_json::from_value::<Input>(json).is_err(),
-                "expected {publisher_url} to be refused"
-            );
+    fn publisher_is_absent_from_schema_and_rejected_as_input() {
+        let schema = schemars::schema_for!(Input);
+        assert!(schema.as_value()["properties"]
+            .get("publisher_url")
+            .is_none());
+        for publisher in [json!("https://caller.example.com"), json!(null)] {
+            let request = json!({"file_path": "test.txt", "publisher_url": publisher});
+            let error = serde_json::from_value::<Input>(request).err().unwrap();
+            assert!(error.to_string().contains("unknown field"), "{error}");
         }
     }
 
-    #[test]
-    fn a_public_publisher_of_the_callers_choosing_is_accepted() {
-        for publisher_url in [
-            "https://publisher.walrus-testnet.walrus.space",
-            "https://walrus-mainnet-publisher-1.staketab.org",
-            "https://walrus.example.com:9000",
-        ] {
-            let json = json!({ "file_path": "x", "publisher_url": publisher_url });
+    #[tokio::test]
+    async fn file_uploads_require_an_explicit_publisher() {
+        let _root = UploadRoot::new("missing-publisher", &[("test.txt", "test")]).await;
+        for publisher in [None, Some(""), Some("   ")] {
+            let _env = WalrusEnv::new(publisher, None).await;
+            let reason = invoke_expecting_validation_error("test.txt").await;
             assert!(
-                serde_json::from_value::<Input>(json).is_ok(),
-                "expected {publisher_url} to be accepted"
+                reason.contains("WALRUS_PUBLISHER_URL must be set for uploads"),
+                "{reason}"
             );
         }
     }
