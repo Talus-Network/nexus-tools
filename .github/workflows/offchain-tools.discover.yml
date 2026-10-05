@@ -18,6 +18,9 @@ on:
       content-hash:
         description: 'Aggregate hash of all tool versions'
         value: ${{ jobs.discover.outputs.content-hash }}
+      changed-count:
+        description: 'Number of entries in matrix-changed; 0 means nothing deployable changed'
+        value: ${{ jobs.discover.outputs.changed-count }}
 
 jobs:
   discover:
@@ -27,6 +30,7 @@ jobs:
       matrix-all: ${{ steps.build.outputs.matrix-all }}
       matrix-changed: ${{ steps.build.outputs.matrix-changed }}
       content-hash: ${{ steps.build.outputs.content-hash }}
+      changed-count: ${{ steps.build.outputs.changed-count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -153,6 +157,9 @@ jobs:
           echo "matrix-all={\"include\":${ALL}}" >> "$GITHUB_OUTPUT"
           echo "matrix-changed={\"include\":${CHANGED}}" >> "$GITHUB_OUTPUT"
           echo "content-hash=${CONTENT_HASH}" >> "$GITHUB_OUTPUT"
+          # Lets callers skip the deploy matrix instead of handing Actions an
+          # empty `include`, which fails the job before it starts.
+          echo "changed-count=$(echo "$CHANGED" | jq 'length')" >> "$GITHUB_OUTPUT"
 
           echo "::group::matrix-all"
           echo "$ALL" | jq .

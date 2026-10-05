@@ -118,7 +118,19 @@ jobs:
   # workflow_dispatch with PR# or target-env: push on all matrix.
   deploy:
     needs: [discover, resolve-target]
-    if: always() && !cancelled() && needs.discover.result == 'success'
+    # On a PR or a push to main the matrix is `matrix-changed`, which is empty
+    # when the only changed tool is one discover excludes (`deploy: false`, or
+    # listed in BLOCKED_TOOLS). Actions fails a reusable-workflow call given an
+    # empty `include` before any job starts, so guard on the count and skip
+    # instead — ci-gate counts `skipped` as a pass. matrix-all is never empty,
+    # so the other paths need no guard.
+    if: >-
+      always() && !cancelled() && needs.discover.result == 'success' &&
+      !(
+        (github.event_name == 'pull_request' ||
+          (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'main'))
+        && needs.discover.outputs.changed-count == '0'
+      )
     uses: ./.github/workflows/offchain-tools.deploy.yml
     with:
       target-ref: >-
