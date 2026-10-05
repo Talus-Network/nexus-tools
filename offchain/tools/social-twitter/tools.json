@@ -1,6 +1,7 @@
 {
   "tool_name": "social-twitter",
   "command": "social-twitter",
+  "deploy": false,
   "environment": {
     "RUST_LOG": "info"
   }
