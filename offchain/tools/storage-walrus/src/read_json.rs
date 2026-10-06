@@ -7,11 +7,18 @@ use {
         client::{TargetPolicy, WalrusConfig},
         utils::validation::EndpointError,
     },
-    nexus_sdk::{fqn, walrus::WalrusError, ToolFqn},
+    nexus_sdk::{
+        execution_limits::MAX_RESOLVED_INPUT_BYTES,
+        fqn,
+        types::{NexusData, OffchainToolOutput},
+        walrus::WalrusError,
+        ToolFqn,
+    },
     nexus_toolkit::*,
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
     serde_json::Value,
+    sha2::{Digest as _, Sha256},
     std::time::Duration,
     thiserror::Error,
 };
@@ -25,6 +32,8 @@ pub enum ReadJsonError {
     Endpoint(#[from] EndpointError),
     #[error("Invalid JSON data: {0}")]
     InvalidJson(String),
+    #[error("Invalid blob reference: {0}")]
+    InvalidBlob(String),
     #[error("JSON validation error: {0}")]
     ValidationError(String),
 }
@@ -78,7 +87,8 @@ pub(crate) struct Input {
 pub(crate) enum Output {
     Ok {
         /// The JSON data that was read
-        json: Value,
+        #[schemars(with = "Value")]
+        json: NexusData,
     },
     Err {
         /// Detailed error message
@@ -86,7 +96,6 @@ pub(crate) enum Output {
         /// Type of error (upload, validation, etc.)
         kind: ReadErrorKind,
         /// HTTP status code if available
-        #[serde(skip_serializing_if = "Option::is_none")]
         status_code: Option<u16>,
     },
 }
@@ -129,30 +138,8 @@ impl NexusTool for ReadJson {
     }
 
     async fn invoke(&self, input: Self::Input) -> Self::Output {
-        match self
-            .read(input.blob_id.clone(), input.aggregator_url.clone())
-            .await
-        {
-            Ok(json_data) => {
-                // If a JSON schema was provided, validate against it
-                if let Some(schema_def) = input.json_schema.as_ref() {
-                    // Validate JSON data against the provided schema
-                    match validate(schema_def, &json_data) {
-                        Ok(()) => {
-                            // Schema validation passed
-                            Output::Ok { json: json_data }
-                        }
-                        Err(e) => Output::Err {
-                            reason: e.to_string(),
-                            kind: ReadErrorKind::Schema,
-                            status_code: None,
-                        },
-                    }
-                } else {
-                    // If we parsed valid JSON but no schema was provided
-                    Output::Ok { json: json_data }
-                }
-            }
+        match self.read(input).await {
+            Ok(json) => Output::Ok { json },
             Err(e) => {
                 // Extract status code from WalrusError if available
                 let status_code = match &e {
@@ -164,39 +151,50 @@ impl NexusTool for ReadJson {
 
                 Output::Err {
                     reason: e.to_string(),
-                    kind: if matches!(e, ReadJsonError::InvalidJson(_)) {
-                        ReadErrorKind::Validation
-                    } else {
-                        ReadErrorKind::Network
+                    kind: match e {
+                        ReadJsonError::InvalidJson(_) | ReadJsonError::InvalidBlob(_) => {
+                            ReadErrorKind::Validation
+                        }
+                        ReadJsonError::ValidationError(_) => ReadErrorKind::Schema,
+                        _ => ReadErrorKind::Network,
                     },
                     status_code,
                 }
             }
         }
     }
+
+    fn encode_output(output: Self::Output) -> AnyResult<OffchainToolOutput> {
+        match output {
+            Output::Ok { json } => {
+                OffchainToolOutput::from_ports(b"ok".to_vec(), [("json".into(), json)])
+            }
+            error => OffchainToolOutput::from_json(serde_json::to_value(error)?),
+        }
+    }
 }
 
 impl ReadJson {
-    async fn read(
-        &self,
-        blob_id: String,
-        aggregator_url: Option<String>,
-    ) -> Result<Value, ReadJsonError> {
+    async fn read(&self, input: Input) -> Result<NexusData, ReadJsonError> {
         let walrus_client = WalrusConfig::new()
-            .with_aggregator_url(aggregator_url)
+            .with_aggregator_url(input.aggregator_url)
             .with_target_policy(self.target_policy)
             .build()
             .await?;
 
-        walrus_client
-            .read_json(&blob_id)
-            .await
-            .map_err(|error| match error {
-                WalrusError::SerializationError(error) => {
-                    ReadJsonError::InvalidJson(error.to_string())
-                }
-                error => ReadJsonError::ReadError(error),
-            })
+        let bytes = walrus_client
+            .read_file_bounded(&input.blob_id, MAX_RESOLVED_INPUT_BYTES)
+            .await?;
+        let json = serde_json::from_slice(&bytes)
+            .map_err(|error| ReadJsonError::InvalidJson(error.to_string()))?;
+        if let Some(schema) = input.json_schema.as_ref() {
+            validate(schema, &json)?;
+        }
+
+        // The blob already holds the output. Commit its original bytes without
+        // uploading or serializing the decoded JSON again.
+        NexusData::walrus_data(input.blob_id.as_bytes(), Sha256::digest(&bytes).to_vec())
+            .map_err(|error| ReadJsonError::InvalidBlob(error.to_string()))
     }
 }
 
@@ -528,7 +526,10 @@ mod tests {
         // Mock successful response with valid JSON according to schema
         // Need to make sure the Content-Type is application/json
         let mock = server
-            .mock("GET", "/v1/blobs/test_blob_id")
+            .mock(
+                "GET",
+                "/v1/blobs/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -547,7 +548,7 @@ mod tests {
         };
         let output = tool
             .invoke(Input {
-                blob_id: "test_blob_id".to_string(),
+                blob_id: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
                 aggregator_url: Some(server.url()),
                 json_schema: Some(WalrusJsonSchema {
                     name: "TestSchema".to_string(),
@@ -559,11 +560,164 @@ mod tests {
             .await;
 
         match output {
-            Output::Ok { json } => assert_eq!(json, json!({"name": "test", "value": 123})),
+            Output::Ok { json } => assert_eq!(
+                json,
+                NexusData::walrus_data(
+                    b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    Sha256::digest(
+                        serde_json::to_vec(&json!({"name": "test", "value": 123})).unwrap(),
+                    )
+                    .to_vec(),
+                )
+                .unwrap(),
+            ),
             Output::Err { reason, .. } => panic!("Expected valid JSON: {reason}"),
         }
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn uploaded_json_flows_as_a_reference_through_the_sdk_decoder() {
+        use {
+            crate::{client::test_support::WalrusEnv, upload_json::UploadJson},
+            nexus_sdk::{
+                move_bindings::interface::meta_schema::{
+                    MetaSchema,
+                    OutputVariantSchema,
+                    PortSchema,
+                    ValueKind,
+                },
+                types::NexusValue,
+                walrus::WalrusReader,
+            },
+            std::collections::HashMap,
+        };
+
+        let mut server = Server::new_async().await;
+        let _env = WalrusEnv::new(Some(&server.url()), None).await;
+        let blob_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let document = format!(
+            " \n[{}, {{\"count\": 7}}]\n",
+            serde_json::to_string(&"🦭".repeat(30_000)).unwrap(),
+        );
+        assert!(NexusData::inline_data(document.as_bytes().to_vec()).is_err());
+        let upload = server
+            .mock("PUT", "/v1/blobs")
+            .match_query("epochs=1")
+            .match_body(mockito::Matcher::Exact(document.clone()))
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({"newlyCreated": {"blobObject": {
+                    "blobId": blob_id, "id": "0x123", "storage": {"endEpoch": 100}
+                }}})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let read = server
+            .mock("GET", format!("/v1/blobs/{blob_id}").as_str())
+            .with_body(document.clone())
+            .expect(2)
+            .create_async()
+            .await;
+
+        let uploaded = UploadJson
+            .invoke(
+                serde_json::from_value(json!({
+                    "json": document,
+                }))
+                .unwrap(),
+            )
+            .await;
+        assert!(matches!(
+            uploaded,
+            crate::upload_json::Output::NewlyCreated { .. }
+        ));
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
+        let output = tool
+            .invoke(Input {
+                blob_id: blob_id.into(),
+                aggregator_url: Some(server.url()),
+                json_schema: None,
+            })
+            .await;
+        let encoded = ReadJson::encode_output(output).unwrap();
+        let producer = MetaSchema::from_offchain_json_schemas(
+            &serde_json::to_vec(&schemars::schema_for!(Input)).unwrap(),
+            &serde_json::to_vec(&schemars::schema_for!(Output)).unwrap(),
+        )
+        .unwrap();
+        let ports = producer.canonical_output_ports(&encoded).unwrap();
+        assert_eq!(ports.len(), 1);
+        let reference = ports[0].1.clone();
+        assert!(
+            !reference.is_many(),
+            "a JSON array remains one JSON document"
+        );
+        assert!(reference.has_walrus());
+
+        let consumer = MetaSchema::new(
+            vec![PortSchema::new(b"json".to_vec(), false, ValueKind::Data)],
+            vec![OutputVariantSchema::new(b"ok".to_vec(), vec![])],
+        );
+        let inputs = HashMap::from([("json".into(), reference)]);
+        let commitment = consumer.canonical_inputs_sha256(&inputs).unwrap();
+        let reader = WalrusReader::new(&server.url(), MAX_RESOLVED_INPUT_BYTES).unwrap();
+        let resolved = reader.resolve_ports(inputs).await.unwrap();
+        assert_eq!(
+            resolved["json"],
+            vec![NexusValue::InlineData {
+                bytes: document.as_bytes().to_vec(),
+            }]
+        );
+        let wire = consumer.resolved_inputs_to_json(&resolved).unwrap();
+        let decoded = consumer.resolved_inputs_from_json(&wire).unwrap();
+        assert_eq!(
+            consumer.resolved_inputs_sha256(&decoded).unwrap(),
+            commitment
+        );
+        assert_eq!(
+            consumer.resolved_inputs_to_semantic_json(&decoded).unwrap()["json"],
+            serde_json::from_str::<Value>(&document).unwrap(),
+        );
+        upload.assert_async().await;
+        read.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn oversized_json_is_rejected_before_output_encoding() {
+        let mut server = Server::new_async().await;
+        let read = server
+            .mock(
+                "GET",
+                "/v1/blobs/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .with_body(vec![b' '; MAX_RESOLVED_INPUT_BYTES + 1])
+            .create_async()
+            .await;
+        let tool = ReadJson {
+            target_policy: TargetPolicy::Unrestricted,
+        };
+        let output = tool
+            .invoke(Input {
+                blob_id: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                aggregator_url: Some(server.url()),
+                json_schema: None,
+            })
+            .await;
+        assert!(matches!(output, Output::Err { ref reason, .. } if reason.contains("byte limit")));
+        let encoded = ReadJson::encode_output(output).unwrap();
+        assert_eq!(encoded.tag, b"err");
+        let schema = nexus_sdk::move_bindings::interface::meta_schema::MetaSchema::from_offchain_json_schemas(
+            &serde_json::to_vec(&schemars::schema_for!(Input)).unwrap(),
+            &serde_json::to_vec(&schemars::schema_for!(Output)).unwrap(),
+        ).unwrap();
+        assert!(schema.canonical_output_ports(&encoded).is_ok());
+        read.assert_async().await;
     }
 
     #[tokio::test]

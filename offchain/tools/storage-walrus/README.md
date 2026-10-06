@@ -8,6 +8,9 @@ Standard Nexus Tool that uploads a JSON file to Walrus and returns the blob ID.
 
 The JSON data to upload.
 
+The tool validates this JSON text and stores its exact bytes. Strings, arrays
+and objects retain their JSON meaning when read again.
+
 _opt_ **`epochs`: [`u8`]** _default_: [`1`]
 
 Number of epochs to store the data.
@@ -96,6 +99,12 @@ The file upload failed.
 # `xyz.taluslabs.storage.walrus.read-json@1`
 
 Standard Nexus Tool that reads a JSON file from Walrus and returns the JSON data. The tool can also validate the JSON data against a provided schema.
+
+The `ok.json` port carries a Walrus reference with the digest of the validated
+bytes. The leader reads and verifies that reference, and the receiving Toolkit
+decodes the original JSON. This also supports JSON larger than the chain inline
+limit, up to the shared 8 MiB execution limit, without another upload. A JSON
+array remains one document. Deploy the matching leader and Toolkit together.
 
 ## Input
 
