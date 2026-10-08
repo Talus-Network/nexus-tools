@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "bench"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "log",
  "nexus-sdk",
@@ -829,7 +829,7 @@ checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
 name = "exchanges-coinbase"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "chrono",
  "mockito",
@@ -1711,7 +1711,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "math"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "nexus-sdk",
  "nexus-toolkit",
@@ -1736,7 +1736,7 @@ checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
 
 [[package]]
 name = "memory-memwal"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -1859,8 +1859,9 @@ dependencies = [
 
 [[package]]
 name = "nexus-sdk"
-version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=b0bc7611e6785147bcdb3f4ad09f1459df7c80d8#b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f0b14a3b66f55e140d7f5496ea44978034d5f0bf83f9ef03c311bc612c201c"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -1898,8 +1899,9 @@ dependencies = [
 
 [[package]]
 name = "nexus-toolkit"
-version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=b0bc7611e6785147bcdb3f4ad09f1459df7c80d8#b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16ceea117747e48094bdd23eec09706810a257d5dbef2e9dd57caf2a3596ead5"
 dependencies = [
  "anyhow",
  "bcs",
@@ -3037,7 +3039,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "social-twitter"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "base64 0.13.1",
  "chrono",
@@ -3306,7 +3308,7 @@ dependencies = [
 
 [[package]]
 name = "templating-jinja"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "minijinja",
  "nexus-sdk",
@@ -3798,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "walrus"
-version = "2.0.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "jsonschema",
