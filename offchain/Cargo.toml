@@ -40,16 +40,12 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # === Nexus deps ===
 [workspace.dependencies.nexus-sdk]
-# For local dev convenience
-# path = "../../nexus-sdk/sdk"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "f88f0e5e2568acaca06b1e6884585119fbada715"
+rev = "b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
 
 [workspace.dependencies.nexus-toolkit]
-# For local dev convenience
-# path = "../../nexus-sdk/toolkit-rust"
 git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "f88f0e5e2568acaca06b1e6884585119fbada715"
+rev = "b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
 
 
 [profile.release]

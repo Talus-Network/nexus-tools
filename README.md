@@ -36,6 +36,11 @@ cargo build --workspace
 cargo test --workspace
 ~~~
 
+All tools use the shared Toolkit to decode inputs resolved from Walrus. Tools
+that upload their own output use the SDK and return explicit protocol ports
+through `NexusTool::encode_output`; upload policy stays with the tool operator.
+See the [Toolkit guide](https://github.com/Talus-Network/nexus-sdk/tree/main/toolkit-rust) for the API.
+
 ## Adding a new tool
 
 A "tool" is a single Rust crate under `offchain/tools/<name>/` with a few

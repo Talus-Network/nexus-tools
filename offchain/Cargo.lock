@@ -1860,7 +1860,7 @@ dependencies = [
 [[package]]
 name = "nexus-sdk"
 version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=f88f0e5e2568acaca06b1e6884585119fbada715#f88f0e5e2568acaca06b1e6884585119fbada715"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=b0bc7611e6785147bcdb3f4ad09f1459df7c80d8#b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -1899,7 +1899,7 @@ dependencies = [
 [[package]]
 name = "nexus-toolkit"
 version = "2.1.0"
-source = "git+https://github.com/Talus-Network/nexus-sdk?rev=f88f0e5e2568acaca06b1e6884585119fbada715#f88f0e5e2568acaca06b1e6884585119fbada715"
+source = "git+https://github.com/Talus-Network/nexus-sdk?rev=b0bc7611e6785147bcdb3f4ad09f1459df7c80d8#b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
 dependencies = [
  "anyhow",
  "bcs",
@@ -3809,6 +3809,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
