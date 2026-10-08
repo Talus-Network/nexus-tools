@@ -63,7 +63,6 @@ pub(crate) enum Output {
         /// Type of error (upload, validation, etc.)
         kind: UploadErrorKind,
         /// HTTP status code if available
-        #[serde(skip_serializing_if = "Option::is_none")]
         status_code: Option<u16>,
     },
 }
@@ -169,7 +168,11 @@ impl UploadJson {
         let walrus_client = publisher_client().await?;
 
         let storage_info = crate::client::with_publisher_retry(|| {
-            walrus_client.upload_json(&input.json, input.epochs, input.send_to_address.clone())
+            walrus_client.upload_bytes(
+                input.json.as_bytes().to_vec(),
+                input.epochs,
+                input.send_to_address.clone(),
+            )
         })
         .await?;
 
@@ -209,7 +212,7 @@ mod tests {
                 mockito::Matcher::UrlEncoded("epochs".into(), "2".into()),
                 mockito::Matcher::UrlEncoded("send_object_to".into(), "0x123".into()),
             ]))
-            .match_body(mockito::Matcher::Json(json!("{\"value\":123}")))
+            .match_body(mockito::Matcher::Exact("{\"value\":123}".into()))
             .with_header("content-type", "application/json")
             .with_body(
                 json!({"newlyCreated": {"blobObject": {

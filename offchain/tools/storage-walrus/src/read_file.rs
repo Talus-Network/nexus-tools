@@ -57,7 +57,6 @@ pub(crate) enum Output {
         /// Type of error (network, validation, etc.)
         kind: ReadErrorKind,
         /// HTTP status code if available
-        #[serde(skip_serializing_if = "Option::is_none")]
         status_code: Option<u16>,
     },
 }
