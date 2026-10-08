@@ -4,7 +4,7 @@ members = ["tools/*"]
 
 [workspace.package]
 edition = "2021" # "2024" does not compile.
-version = "2.0.0"
+version = "2.1.1"
 repository = "https://github.com/Talus-Network/nexus-tools"
 homepage = "https://talus.network"
 license = "Apache-2.0"
@@ -40,12 +40,10 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # === Nexus deps ===
 [workspace.dependencies.nexus-sdk]
-git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
+version = "2.1.1"
 
 [workspace.dependencies.nexus-toolkit]
-git = "https://github.com/Talus-Network/nexus-sdk"
-rev = "b0bc7611e6785147bcdb3f4ad09f1459df7c80d8"
+version = "2.1.1"
 
 
 [profile.release]

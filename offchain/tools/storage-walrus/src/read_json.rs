@@ -8,7 +8,7 @@ use {
         utils::validation::EndpointError,
     },
     nexus_sdk::{
-        execution_limits::MAX_RESOLVED_INPUT_BYTES,
+        execution_limits::MAX_RESOLVED_DATA_BYTES,
         fqn,
         types::{NexusData, OffchainToolOutput},
         walrus::WalrusError,
@@ -183,7 +183,7 @@ impl ReadJson {
             .await?;
 
         let bytes = walrus_client
-            .read_file_bounded(&input.blob_id, MAX_RESOLVED_INPUT_BYTES)
+            .read_file_bounded(&input.blob_id, MAX_RESOLVED_DATA_BYTES)
             .await?;
         let json = serde_json::from_slice(&bytes)
             .map_err(|error| ReadJsonError::InvalidJson(error.to_string()))?;
@@ -666,7 +666,7 @@ mod tests {
         );
         let inputs = HashMap::from([("json".into(), reference)]);
         let commitment = consumer.canonical_inputs_sha256(&inputs).unwrap();
-        let reader = WalrusReader::new(&server.url(), MAX_RESOLVED_INPUT_BYTES).unwrap();
+        let reader = WalrusReader::new(&server.url(), MAX_RESOLVED_DATA_BYTES).unwrap();
         let resolved = reader.resolve_ports(inputs).await.unwrap();
         assert_eq!(
             resolved["json"],
@@ -696,7 +696,7 @@ mod tests {
                 "GET",
                 "/v1/blobs/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             )
-            .with_body(vec![b' '; MAX_RESOLVED_INPUT_BYTES + 1])
+            .with_body(vec![b' '; MAX_RESOLVED_DATA_BYTES + 1])
             .create_async()
             .await;
         let tool = ReadJson {
