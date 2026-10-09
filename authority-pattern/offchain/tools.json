@@ -1,0 +1,9 @@
+{
+  "tool_name": "agent-api",
+  "command": "agent-api",
+  "deploy": false,
+  "publish_docs": true,
+  "environment": {
+    "RUST_LOG": "info"
+  }
+}

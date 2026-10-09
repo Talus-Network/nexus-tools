@@ -7,9 +7,14 @@ sdk/tests/move/onchain_tool_test/Move.lock
 
 # Environment
 .env
+authority-pattern/deployment.local.json
 
 # IDEs
 .idea
+
+# Python caches
+__pycache__/
+*.py[cod]
 
 # macOS
 .DS_Store

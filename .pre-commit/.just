@@ -248,7 +248,7 @@ check-tool-conventions:
 
     error=0
 
-    for d in offchain/tools/*/; do
+    for d in offchain/tools/*/ authority-pattern/offchain/; do
         tool=$(basename "$d")
         if [[ ! -f "${d}tools.json" ]]; then
             echo "❌  ${d}: missing tools.json" >&2
@@ -262,7 +262,7 @@ check-tool-conventions:
 
     # Any fqn!("...@<digits>") with a literal numeric version is a bug:
     # the version must come from env!("TOOL_FQN_VERSION") via concat!().
-    bad=$(grep -rEn 'fqn!\("[^"]+@[0-9]+"' offchain/tools/*/src/ 2>/dev/null || true)
+    bad=$(grep -rEn 'fqn!\("[^"]+@[0-9]+"' offchain/tools/*/src/ authority-pattern/offchain/src/ 2>/dev/null || true)
     if [[ -n "$bad" ]]; then
         echo "❌  Hardcoded fqn! version found — use concat!(\"...@\", env!(\"TOOL_FQN_VERSION\")):" >&2
         echo "$bad" >&2

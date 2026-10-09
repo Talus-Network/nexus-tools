@@ -1,0 +1,58 @@
+# Agent API lifecycle Tools for {{COIN_SLUG}}
+
+This generated package contains four concrete on-chain Tools for the payment coin `{{COIN_TYPE}}`. The package uses a configured concrete coin type in each Tool `execute` signature, so runtime callers do not supply Move type arguments. `AgentWallet<T>` and `Cashier<T>` instances must use the same payment coin type.
+
+## Generate a package
+
+Create a JSON configuration with a package name, lowercase Tool slug, fully qualified coin struct type, dependency aliases, and any named addresses used by that type. `coin_type` may be any valid Move struct type, including a nested generic type; the generator validates its addresses against `named_addresses` and dependencies.
+
+```json
+{
+  "package_name": "agent_api_usdc",
+  "coin_slug": "usdc",
+  "coin_type": "usdc::coin::USDC",
+  "dependencies": [{"alias": "usdc", "mvr": "@publisher/usdc"}],
+  "named_addresses": {"usdc": "0x1234"}
+}
+```
+
+Run the generator from the `authority-pattern/` directory. It writes a new package directory and refuses existing destinations; choose a fresh output path for each generation.
+
+```sh
+python3 onchain/agent_api/generate.py --config ./agent-api-usdc.json --output ./agent-api-usdc
+sui move build --path ./agent-api-usdc
+sui move test --path ./agent-api-usdc
+```
+
+The generation fixtures under `onchain/agent_api/fixtures/` show SUI and a second configured coin. Replace the example type, MVR dependency, named address, and slug with the values published for your coin. See the [Nexus Tool guide](https://docs.talus.network/talus-documentation/developer-docs/index/tool), [Nexus SDK Toolkit guide](https://github.com/Talus-Network/nexus-sdk/tree/main/toolkit-rust), and [Sui developer setup](https://docs.sui.io/guides/developer/getting-started) for environment setup.
+
+## Tool schemas
+
+The framework injects the verified `ProvenValue<AgentVertexAuthorization>`, `UIDRequirements`, `OnchainToolResult`, and `TxContext` arguments. The resolved Tool inputs and outputs are:
+
+| Tool | Resolved inputs | Output |
+| --- | --- | --- |
+| `xyz.taluslabs.agent_api.{{COIN_SLUG}}.register@2` | `wallet: AgentWallet<{{COIN_TYPE}}>`, `cashier: Cashier<{{COIN_TYPE}}>`, `export_enabled: bool`, `owner_public_key_hex: String` | `Registered { binding_id: string }` |
+| `xyz.taluslabs.agent_api.{{COIN_SLUG}}.charge@1` | `wallet: AgentWallet<{{COIN_TYPE}}>`, `cashier: Cashier<{{COIN_TYPE}}>`, `binding_id: ID`, `coin_units: u64` | `Charged {}` |
+| `xyz.taluslabs.agent_api.{{COIN_SLUG}}.authorize@1` | `wallet: AgentWallet<{{COIN_TYPE}}>`, `cashier: Cashier<{{COIN_TYPE}}>`, `binding_id: ID`, `target_vertex: vector<u8>`, `walk_index: u64`, `iteration: u64`, `operation: vector<u8>`, `input_hash: vector<u8>` (32-byte SHA-256 commitment) | `Authorized { binding_id: string }` |
+| `xyz.taluslabs.agent_api.{{COIN_SLUG}}.revoke@1` | `wallet: AgentWallet<{{COIN_TYPE}}>`, `cashier: Cashier<{{COIN_TYPE}}>`, `binding_id: ID` | `Revoked {}` |
+| `xyz.taluslabs.agent_api.query@1` | JSON object `{ "binding_id": string, "payload": object }` | `ok { result: JSON, cumulative_usage: u64 }` or `err { reason: string }` |
+| `xyz.taluslabs.agent_api.retrieve-key@1` | JSON object `{ "binding_id": string }` | `ok { envelope: { version: u8, suite: string, ephemeral_public_key: string, nonce: string, ciphertext: string } }` or `err { reason: string }` |
+
+For registration, pass `owner_public_key_hex` as one scalar string: use `""` when `export_enabled` is false, or exactly 64 hexadecimal characters without a `0x` prefix when it is true. Hexadecimal input may use either letter case and decodes to the owner's 32-byte X25519 public key. The accounting layer still stores no owner key when export is disabled and requires exactly 32 bytes when it is enabled. The provider key is never a Tool input or output; `retrieve-key` exposes only the authenticated ciphertext envelope for the registration-approved owner key.
+
+This scalar input is the `register@2` ABI. It replaces the `register@1` vector input because Nexus scheduler `Many` inputs cannot be empty. Existing deployments retain their `register@1` schema; publish the updated package and register `register@2` before passing the scalar string.
+
+Registration allocates its binding ID from the Sui transaction context and returns it as the named `binding_id` string/Data output, encoded as a quoted address in InlineData JSON. It is not an Object output. Use that public, non-secret value as the `binding_id` input to later charge, authorize, and revoke calls; the backend observes the same ID in the registration event.
+
+## Operator pricing
+
+Each cashier starts with no configured rate. Before registering its Tools, the operator must use the matching `OperatorCap` to set a positive `credit_rate` with `accounting::set_credit_rate`. The deployment plan prints this explicit `sui client ptb` command before Tool registration and marks it `NOT EXECUTED`. The `register` Tool accepts no price input; it snapshots the cashier's current rate into the new binding. An operator update applies only to later registrations. The rate is the number of provider credit units granted per integer payment coin unit charged.
+
+## Funding and accounting
+
+Registration creates a binding without charging the wallet. `charge` moves payment coin into that binding's refundable reserve and emits provider credit at the binding's snapshotted rate. Settlement uses cumulative provider usage and recognizes `ceil(usage / binding rate)` payment-coin units, then moves only the delta from the reserve into earned revenue.
+
+Rounding is cumulative, so splitting a usage report cannot increase the total fee. At rate 3, a 10-coin charge funds 30 provider credits; cumulative usage 1, 2, or 3 recognizes one coin, while usage 4 recognizes two. If the binding is revoked after usage 3, the other nine coins, including the sub-coin credit remainder, remain refundable. The owner can withdraw only uncommitted wallet funds; the operator can withdraw only earned revenue. Revocation freezes new grants, and the settlement capability settles final usage before returning the complete remaining reserve to the original wallet once.
+
+The Rust service documents the signed HTTP schemas, provider adapter contract, owner-side decryption, and local demo in [`authority-pattern/offchain/README.md`](https://github.com/Talus-Network/nexus-tools/blob/main/authority-pattern/offchain/README.md).

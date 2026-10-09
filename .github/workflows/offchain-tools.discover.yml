@@ -45,6 +45,7 @@ jobs:
           base_sha: ${{ inputs.base-ref }}
           files: |
             offchain/tools/**
+            authority-pattern/**
             offchain/Cargo.toml
             offchain/Cargo.lock
             offchain/Dockerfile
@@ -94,7 +95,7 @@ jobs:
           read -ra BLOCKED_TOOLS_ARR <<< "${BLOCKED_TOOLS:-}"
           echo "Blocked tools: ${BLOCKED_TOOLS_ARR[*]:-<none>}"
 
-          for TOOLS_JSON in offchain/tools/*/tools.json; do
+          for TOOLS_JSON in offchain/tools/*/tools.json authority-pattern/offchain/tools.json; do
             [ -f "$TOOLS_JSON" ] || continue
             DIR=$(dirname "$TOOLS_JSON")
             TOOL_NAME=$(jq -r '.tool_name' "$TOOLS_JSON")
@@ -142,6 +143,9 @@ jobs:
               for f in $CHANGED_FILES; do
                 case "$f" in
                   "${DIR}/"*) TOOL_CHANGED=true ;;
+                  authority-pattern/*)
+                    if [ "$DIR" = "authority-pattern/offchain" ]; then TOOL_CHANGED=true; fi
+                    ;;
                 esac
               done
             fi

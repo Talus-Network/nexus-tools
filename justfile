@@ -8,6 +8,9 @@
 # Commands concerning native Nexus Tools (offchain workspace)
 mod tools 'offchain/tools/.just'
 
+# Commands for the complete Agent API Authority Pattern bundle.
+mod authority-tool 'authority-pattern/justfile'
+
 # Example invocations for the memory-memwal Tools bundle
 mod memwal 'offchain/tools/memory-memwal/.just'
 

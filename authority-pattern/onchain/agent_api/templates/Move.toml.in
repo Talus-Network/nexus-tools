@@ -1,0 +1,17 @@
+[package]
+name = "{{PACKAGE_NAME}}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+{{MOVE_DEPENDENCIES}}
+
+[dev-dependencies]
+nexus_kernel = { r.mvr = "@talus/nexus-kernel" }
+nexus_registry = { r.mvr = "@talus/nexus-registry" }
+nexus_tool = { r.mvr = "@talus/nexus-tool" }
+nexus_workflow = { r.mvr = "@talus/nexus-workflow" }
+nexus_scheduler = { r.mvr = "@talus/nexus-scheduler" }
+
+[addresses]
+{{MOVE_ADDRESSES}}

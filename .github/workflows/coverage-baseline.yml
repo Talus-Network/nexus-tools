@@ -12,6 +12,7 @@ jobs:
     with:
       files: |
         offchain/tools/**
+        authority-pattern/offchain/**
         offchain/Cargo.toml
         offchain/Cargo.lock
 

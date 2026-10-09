@@ -61,7 +61,9 @@ runs:
       shell: bash
       working-directory: offchain
       run: |
-        cargo llvm-cov --all-features --workspace --lcov --output-path ../lcov.info
+          cargo llvm-cov --all-features --workspace --lcov --output-path ../lcov.info
+          cargo llvm-cov --manifest-path ../authority-pattern/offchain/Cargo.toml --all-features --lcov --output-path ../authority-pattern-lcov.info
+          cat ../authority-pattern-lcov.info >> ../lcov.info
       env:
         CARGO_TERM_COLOR: always
         CACHE_ON_FAILURE: true
