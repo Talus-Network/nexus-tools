@@ -3,11 +3,11 @@
 #
 # Builds a single tool binary identified by BINARY and TOOL_DIR build args
 # (TOOL_DIR is the tool's path relative to the build context, e.g.
-# "offchain/tools/math"), embeds TOOL_FQN_VERSION (computed by CI from the
+# "offchain/tools/math" or "authority-pattern/offchain"), embeds TOOL_FQN_VERSION (computed by CI from the
 # tool's source and shared build inputs) so the tool's FQN strings carry the
 # version of the code and dependencies being built.
 #
-# Building via --manifest-path scopes cargo to the workspace member's Cargo.toml.
+# Building via --manifest-path supports both workspace members and the standalone Agent API package.
 
 FROM rust:1.93.1-slim-bookworm AS builder
 
@@ -24,9 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the entire offchain workspace. Cargo's incremental build + the
-# buildkit cache mounts keep this fast.
+# Copy the offchain workspace and standalone Agent API crate. Cargo's
+# incremental build + the buildkit cache mounts keep this fast.
 COPY offchain/ ./offchain/
+COPY authority-pattern/offchain/ ./authority-pattern/offchain/
+
+ENV CARGO_TARGET_DIR=/app/offchain/target
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/app/offchain/target,sharing=locked \

@@ -1,0 +1,64 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+default:
+    @just --list
+
+check:
+    cargo +stable check --locked --manifest-path offchain/Cargo.toml --all-targets --all-features
+
+test:
+    cargo +stable test --locked --manifest-path offchain/Cargo.toml --all-targets --all-features
+    python3 -m unittest discover -s tests -v
+    python3 -m unittest discover -s onchain/agent_api/tests -v
+
+clippy:
+    cargo +stable clippy --locked --manifest-path offchain/Cargo.toml --all-targets --all-features -- -D warnings
+
+fmt-check:
+    cargo +nightly-2025-01-06 fmt --manifest-path offchain/Cargo.toml --all -- --check
+
+build:
+    cargo +stable build --locked --manifest-path offchain/Cargo.toml --bin agent-api
+
+verify sui_root:
+    just build
+    just check
+    just test
+    just clippy
+    just fmt-check
+    just move-test "{{ sui_root }}"
+    just meta
+    just demo
+
+generator-test:
+    python3 -m unittest discover -s onchain/agent_api/tests -v
+
+move-test sui_root:
+    python3 onchain/agent_api/run_move_tests.py --sui-root "{{ sui_root }}"
+
+generate config output:
+    python3 onchain/agent_api/generate.py --config "{{ config }}" --output "{{ output }}"
+
+deployment-validate config:
+    python3 deploy.py validate --config "{{ config }}"
+
+deployment-plan config:
+    python3 deploy.py plan --config "{{ config }}"
+
+meta:
+    cargo +stable run --locked --manifest-path offchain/Cargo.toml --bin agent-api -- --meta
+
+demo:
+    cargo +stable run --locked --manifest-path offchain/Cargo.toml --bin agent-api -- demo
+
+serve:
+    cargo +stable run --locked --release --manifest-path offchain/Cargo.toml --bin agent-api
+
+worker:
+    cargo +stable run --locked --release --manifest-path offchain/Cargo.toml --bin agent-api -- worker
+
+mock-provider bind_addr="127.0.0.1:8091":
+    AGENT_API_MOCK_PROVIDER_BIND_ADDR="{{ bind_addr }}" cargo +stable run --locked --release --manifest-path offchain/Cargo.toml --bin agent-api -- mock-provider
+
+validate-http url:
+    nexus tool validate offchain --url "{{ url }}"

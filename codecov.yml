@@ -36,6 +36,7 @@ component_management:
       name: Tools
       paths:
         - offchain/tools/**
+        - authority-pattern/offchain/src/**
 
 comment:
   layout: "header, diff, flags, components, files, footer"
@@ -59,6 +60,7 @@ flags:
   unittests:
     paths:
       - offchain/tools/
+      - authority-pattern/offchain/src/
     carryforward: true
 
 github_checks:

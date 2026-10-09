@@ -1,0 +1,7 @@
+{
+  "package_name": "agent_api_test_coin",
+  "coin_slug": "test-coin",
+  "coin_type": "agent_api_test_coin::test_coin::TEST_COIN",
+  "dependencies": [],
+  "named_addresses": {}
+}

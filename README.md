@@ -10,6 +10,10 @@ A collection of [tools] that the Talus core team maintains.
 
 We use [just][just-repo] as a command runner. List tasks with `just --list`.
 
+## Agent API Authority Pattern
+
+The complete Agent API Tool bundle is in [`authority-pattern/`](authority-pattern/README.md): generated coin-specific Move Tools, the standalone signed HTTP service and worker, local test commands, deployment configuration, and a non-executing deployment planner. Run `just --list` from that directory for bundle commands; the root `just authority-tool test` and pre-commit hook keep its Rust and generator coverage in the repository workflow. Tool discovery and the shared Docker build also include `authority-pattern/offchain/tools.json`.
+
 ## Layout
 
 ~~~text
@@ -22,7 +26,8 @@ nexus-tools/
 │   │   ├── build.rs         # validates bin/tool name, threads TOOL_FQN_VERSION
 │   │   └── src/...
 │   └── Dockerfile           # shared, parameterized by PACKAGE/BINARY/TOOL_FQN_VERSION
-├── onchain/                 # reserved for future Move tools
+├── authority-pattern/       # complete Agent API Move, Rust, tests, and deployment bundle
+├── onchain/                 # reserved for other Move tools
 └── .github/
     ├── actions/             # composite actions (install-sui, install-nexus-cli, gcp-auth-*)
     └── workflows/           # CI: discover → deploy → prepare → register → trigger-tf-apply

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "coins": [
+    {
+      "coin_slug": "replace-with-coin",
+      "package_name": "agent_api_replace_with_coin",
+      "package_path": "./build/agent_api_replace_with_coin",
+      "coin_type": "0x...::coin_module::COIN_TYPE",
+      "event_rpc_url": "https://sui-rpc.example.invalid",
+      "invocation_cost_mist": "",
+      "package_id": "",
+      "cashier_id": "",
+      "operator_cap_id": "",
+      "credit_rate": "",
+      "settlement_cap_id": "",
+      "tool_witness_ids": {
+        "register": "",
+        "charge": "",
+        "authorize": "",
+        "revoke": ""
+      },
+      "collateral_coin_id": ""
+    }
+  ],
+  "service": {
+    "public_url": "https://agent-api.example.invalid",
+    "provider_url": "https://provider.example.invalid",
+    "bind_addr": "127.0.0.1:8080",
+    "database_path": "/var/lib/agent-api/agent-api.sqlite",
+    "master_key_env": "AGENT_API_MASTER_KEY",
+    "provider_operator_key_env": "AGENT_API_PROVIDER_OPERATOR_KEY",
+    "toolkit_config_path": "/run/secrets/nexus-toolkit.json",
+    "allowed_leaders_path": "/run/secrets/allowed-leaders.json",
+    "query_signing_key_file": "/run/secrets/agent-api-query-key.json",
+    "retrieve_key_signing_key_file": "/run/secrets/agent-api-retrieve-key.json",
+    "http_tool_fqn_version": "",
+    "invocation_cost_mist": "",
+    "collateral_coin_id": ""
+  },
+  "worker": {
+    "sui_grpc_url": "https://sui-grpc.example.invalid",
+    "settlement_signer_key_env": "AGENT_API_SETTLEMENT_SIGNER_KEY_B64",
+    "settlement_gas_budget_mist": "50000000"
+  }
+}
